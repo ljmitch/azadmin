@@ -1,0 +1,19 @@
+# Logs
+*.log
+
+# Local overrides / env files
+.env
+.env.*
+
+# Editor scratch
+.vscode/
+.idea/
+*.swp
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Don't ever commit anything that could hold a secret
+config/powershell/secret.ps1
+**/secrets/

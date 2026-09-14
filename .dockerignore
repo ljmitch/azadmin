@@ -1,0 +1,21 @@
+# Never send these into the build context - irrelevant to the image and
+# can leak credentials accidentally copied nearby.
+
+.git/
+.gitignore
+README.md
+AGENTS.md
+docs/
+Makefile
+.dockerignore
+
+# Local editor files
+.vscode/
+.idea/
+*.swp
+
+# Anything that might hold a credential near the repo root
+*.crx
+*.pem
+*.pfx
+secrets/

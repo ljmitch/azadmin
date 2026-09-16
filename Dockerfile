@@ -23,7 +23,8 @@ ARG BUILD_DATE=unknown
 
 LABEL org.opencontainers.image.title="azure-admin-toolbox" \
       org.opencontainers.image.description="Reusable Azure/M365 admin toolbox (pwsh7, az, Az, Graph, TF, AKS)" \
-      org.opencontainers.image.source="PRIVATE REPO"
+      org.opencontainers.image.source="https://github.com/ljmitch/azadmin" \
+      org.opencontainers.image.licenses="MIT"
 
 # ---- Base packages (all apt tooling landed UP FRONT - nothing later) --------
 # apt-get install does not upgrade packages already in ubuntu:24.04 (libc6,

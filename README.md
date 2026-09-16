@@ -56,6 +56,13 @@ podman run -it --rm `
 
 (`docker` runs identically if Podman isn't your constraint.)
 
+CI on GitHub Actions publishes `ghcr.io/ljmitch/azadmin` after verify
+(see `docs/BUILD.md`). Local Podman builds are unchanged.
+
+```powershell
+podman pull ghcr.io/ljmitch/azadmin:latest
+```
+
 ## Repo map
 
 | Path | Purpose |
@@ -68,6 +75,7 @@ podman run -it --rm `
 | `docs/USAGE.md` | Login persistence options (full/stateless/partial), token cache hygiene, passkey auth, workflows |
 | `docs/TOOLS.md` | Inventory of every tool + why it's here |
 | `docs/TROUBLESHOOTING.md` | Known failures (scars) that shaped the image |
+| `.github/workflows/build-push.yml` | CI: Docker build, verify, push to GHCR |
 | `config/powershell/…` | Optional pwsh profile baked into the image |
 
 ## Updating tools

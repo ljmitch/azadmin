@@ -123,7 +123,42 @@ RUN wget -q https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_V
 Note: the current base (noble) works with the PMC apt path; the `.deb`
 fallback is a contingency plan.
 
-## Pushing to a registry (optional)
+## Pushing to GHCR (CI)
+
+GitHub Actions (`.github/workflows/build-push.yml`) builds with **Docker
+Buildx** on `ubuntu-latest`, runs `scripts/Verify-Toolbox.ps1`, then pushes
+to `ghcr.io/<owner>/<repo>`. Docker is the CI path; Podman stays for local
+builds. GitHub-hosted Ubuntu runners include both (see
+[runner-images](https://github.com/actions/runner-images)) but Podman on
+those images has had version/registry churn; the official `docker/*` actions
+target GHCR.
+
+Triggers:
+
+- Weekly Monday 04:00 UTC - always passes `BUILD_DATE` and pulls a fresh
+  `ubuntu:24.04` so floaters and apt security updates re-resolve
+- Push to `main` that touches the Dockerfile, scripts, profile, or the
+  workflow itself - uses layer cache, no `BUILD_DATE`
+- Actions tab -> Run workflow - optional cache-bust checkbox (on by default)
+
+Tags pushed after verify: `latest`, `YYYY-MM-DD`, `sha-<shortsha>`.
+
+```powershell
+podman pull ghcr.io/ljmitch/azadmin:latest
+```
+
+(`docker pull` is the same image.)
+
+First successful publish creates a **private** GHCR package
+([docs](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pushing-container-images)).
+For anonymous pull from this public repo: GitHub -> Packages -> the image ->
+Package settings -> Change visibility -> Public.
+
+No extra PAT. The workflow uses `GITHUB_TOKEN` with `packages: write`. The
+Dockerfile `org.opencontainers.image.source` label links the package to this
+repo so that token is allowed to push.
+
+## Pushing to a registry (manual, optional)
 
 ```powershell
 podman tag admin-toolbox:latest <your-acr>.azurecr.io/admin-toolbox:latest

@@ -1,0 +1,122 @@
+# Build the toolbox image, smoke-test it, then push to GHCR.
+#
+# Runners: GitHub-hosted ubuntu-latest ships Docker Engine + Buildx.
+# Podman is also preinstalled on Ubuntu runner images, but version and
+# registries.conf have moved around; Docker + official docker/* actions is
+# the supported path to GHCR. Local builds stay on Podman (docs/BUILD.md).
+#
+# Software list: https://github.com/actions/runner-images
+# GHCR + GITHUB_TOKEN:
+#   https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry
+#
+# First publish is private by default. After the first green run: GitHub ->
+# Packages -> this image -> Package settings -> Change visibility -> Public
+# (needed for anonymous pull from a public repo).
+
+name: Build and push to GHCR
+
+on:
+  schedule:
+    # Monday 04:00 UTC - weekly re-resolve of floated tools
+    - cron: "0 4 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - scripts/**
+      - config/powershell/**
+      - .dockerignore
+      - .github/workflows/build-push.yml
+  workflow_dispatch:
+    inputs:
+      cache_bust:
+        description: Re-resolve floating tools (passes BUILD_DATE). On for weekly-style refresh.
+        type: boolean
+        default: true
+
+concurrency:
+  group: ghcr-build
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      # type=gha cache export (otherwise locking permissions can strip it)
+      actions: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Image name (GHCR requires lowercase)
+        run: echo "IMAGE=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Cache-bust stamp
+        id: bust
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.cache_bust }}" = "true" ]; then
+            stamp="$(date -u +%Y%m%d%H%M%S)"
+            echo "build_date=${stamp}" >> "$GITHUB_OUTPUT"
+            echo "Pulling a fresh ubuntu:24.04 so apt-get upgrade is not sitting on a stale base."
+            docker pull ubuntu:24.04
+          else
+            echo "build_date=unknown" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          version: latest
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value={{date 'YYYY-MM-DD'}}
+            type=sha,prefix=sha-
+
+      - name: Build (load locally, do not push yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_DATE=${{ steps.bust.outputs.build_date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify toolbox
+        run: |
+          IMAGE="$(echo "${{ steps.meta.outputs.tags }}" | head -n1)"
+          docker run --rm \
+            -v "${{ github.workspace }}:/work" -w /work \
+            "$IMAGE" \
+            pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
+
+      - name: Push to GHCR
+        run: |
+          echo "${{ steps.meta.outputs.tags }}" | while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            docker push "$tag"
+          done

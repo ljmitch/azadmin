@@ -22,6 +22,7 @@ environment-specific facts. Keep examples generic (`<org>`, `<acr>`).
 | How to run it (volumes, login, one-shots) | [docs/USAGE.md](docs/USAGE.md) |
 | Known failures (scars) | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) |
 | Image definition | [Dockerfile](Dockerfile) |
+| CI (GHCR) | [.github/workflows/build-push.yml](.github/workflows/build-push.yml) |
 | Human overview | [README.md](README.md) |
 
 ## Hard rules
@@ -69,6 +70,10 @@ podman run --rm -v ${PWD}:/work -w /work admin-toolbox:latest pwsh -NoProfile -F
 ```
 
 `Verify-Toolbox.ps1` is **not** baked into the image. Bind-mount the repo.
+
+CI uses Docker Buildx on GitHub-hosted `ubuntu-latest` (not Podman) and must
+pass verify before pushing to GHCR. Do not add a `pull_request` push-to-GHCR
+job. Local workflow stays Podman; see [docs/BUILD.md](docs/BUILD.md).
 
 ## Scope
 

@@ -31,6 +31,7 @@ LABEL org.opencontainers.image.title="azure-admin-toolbox" \
 # base-files, ...). upgrade first so a cache-bust / --no-cache build takes
 # noble-updates + noble-security. --force-confold keeps existing conffiles.
 # dnsutils/iputils/netcat: network debugging is a core workload.
+# Network extras: extra noble-archive CLIs after the core set. No extra feeds.
 # build-essential stays out (no compilation in this image).
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
@@ -40,8 +41,12 @@ RUN apt-get update \
       wget curl apt-transport-https ca-certificates gnupg lsb-release \
       git unzip zip less jq rsync \
       python3 python3-pip \
+      procps \
       dnsutils iputils-ping netcat-openbsd traceroute \
-      openssh-client rsync \
+      openssh-client \
+      iproute2 mtr-tiny tcptraceroute iputils-tracepath fping hping3 \
+      iperf3 tcpdump \
+      socat openssl nmap ipcalc whois \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- PostgreSQL client via PGDG (latest stable, not Ubuntu's aged copy) -----

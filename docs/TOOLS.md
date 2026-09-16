@@ -6,6 +6,15 @@ pin/float policy (last baselined Sep 2026).
 
 ## System-level (apt, Ubuntu noble archive)
 
+The first apt `RUN` does `apt-get upgrade` before `install`, so packages that
+already shipped in `ubuntu:24.04` (`libc6`, `base-files`, ...) take
+noble-updates / noble-security at build time. `apt-get install` alone would
+leave them frozen. Re-run that layer with `BUILD_DATE` or `--no-cache`.
+
+(psql does NOT come from Ubuntu's archive - see PGDG row below.)
+
+### Fetch, files, and shell plumbing
+
 | Tool | Why |
 |---|---|
 | `git` | Repo work inside the container itself |
@@ -16,19 +25,57 @@ pin/float policy (last baselined Sep 2026).
 | `jq` | JSON selectors without writing a script |
 | `rsync` | Sync mirrors between host-mounted dirs and volumes |
 | `python3` + `pip` | Required for `checkov` |
+| `procps` | `ps`, `top`, `free`, `pgrep` - process view without hoping the base image shipped them |
+| `lsb-release` | Needed for `$(lsb_release -cs)` codename resolution |
+
+### Network (core)
+
+| Tool | Why |
+|---|---|
 | `dnsutils` | `dig`, `nslookup`, `host` - service debugging |
 | `iputils-ping` | basic ICMP liveness checks |
 | `netcat-openbsd` | `nc` port probes for "is that even listening?" |
 | `traceroute` | hop-level network diagnosis |
-| `lsb-release` | Needed for `$(lsb_release -cs)` codename resolution |
 | `openssh-client` | `ssh`, `scp`, `sftp` - both direct and via Bastion |
 
-The first apt `RUN` does `apt-get upgrade` before `install`, so packages that
-already shipped in `ubuntu:24.04` (`libc6`, `base-files`, ...) take
-noble-updates / noble-security at build time. `apt-get install` alone would
-leave them frozen. Re-run that layer with `BUILD_DATE` or `--no-cache`.
+## Network extras (Ubuntu noble apt)
 
-(psql does NOT come from Ubuntu's archive - see PGDG row below.)
+Extra network CLIs from the Ubuntu 24.04 archive (`apt-get`,
+`--no-install-recommends`). Same first apt layer as the core set, listed
+here so they stay below the main toolset.
+
+### Routing and sockets
+
+| Tool | Why |
+|---|---|
+| `iproute2` | `ip addr` / `ip route` / `ip neigh` / `ss` - what the box thinks its network is |
+
+### Path and reachability
+
+| Tool | Why |
+|---|---|
+| `mtr-tiny` | traceroute + ping in one, no X11 (`mtr`) |
+| `tcptraceroute` | hop path over TCP when ICMP is blocked (common in Azure) |
+| `iputils-tracepath` | `tracepath` - MTU discovery along the path |
+| `fping` | ICMP many hosts at once (subnet of VMs) |
+| `hping3` | TCP "ping" / crafted probes when ICMP is filtered |
+
+### Throughput and capture
+
+| Tool | Why |
+|---|---|
+| `iperf3` | TCP/UDP throughput (VNet, VPN, ExpressRoute) |
+| `tcpdump` | packet capture; needs extra caps / host net to see much from a toolbox container |
+
+### Connectivity, TLS, and addressing
+
+| Tool | Why |
+|---|---|
+| `socat` | relay, TLS wrap, one-off port forward |
+| `openssl` | `openssl s_client` for App Gateway / Front Door / Key Vault certs |
+| `nmap` | port/range check through NSGs (`nping` is a suggest, not pulled) |
+| `ipcalc` | VNet CIDR / mask math |
+| `whois` | IP and domain registration lookup |
 
 ## Package repos added beyond Ubuntu's
 

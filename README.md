@@ -49,7 +49,8 @@ Volumes, device-code login, one-shots: [docs/USAGE.md](docs/USAGE.md).
 | IaC | Terraform (HashiCorp apt), tflint (SHA-verified latest), checkov |
 | Storage | azcopy |
 | Web/data | curl, wget, jq, yq (floats by default), git, psql client (latest via PGDG, not Ubuntu's stale copy) |
-| Network | dnsutils, iputils-ping, netcat-openbsd, traceroute |
+| Network | dnsutils, iputils-ping, netcat-openbsd, traceroute, openssh-client |
+| Network extras | iproute2, mtr, tcpdump, iperf3, socat, openssl, nmap, tcptraceroute, fping, tracepath, ipcalc, hping3, whois |
 
 ## Version philosophy
 

@@ -5,9 +5,11 @@
     Loads every expected binary + PowerShell module + az extension and reports
     the version. Any failure = broken image; do not promote the tag.
 
-    Not baked into the image - bind-mount the repo:
+    Not baked into the image - bind-mount this repo:
 
-      podman run --rm -v ${PWD}:/work -w /work admin-toolbox:latest pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
+      podman run --rm -v ${PWD}:/work -w /work ghcr.io/ljmitch/azadmin:latest pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
+
+    Local tag `admin-toolbox:latest` is the same command with that name.
 
     Native CLIs that print help and exit 1 (nc -h) must not fail the script;
     PSNativeCommandUseErrorActionPreference is turned off for that reason.

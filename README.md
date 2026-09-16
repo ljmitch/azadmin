@@ -1,7 +1,42 @@
 # Azure Admin Toolbox
 
-Reusable, rebuild-when-you-need-it container image with the tools used for
-day-to-day Azure / Microsoft 365 admin work:
+Reusable Azure / Microsoft 365 admin toolbox image (pwsh 7, az, Graph, IaC,
+K8s). Day to day: pull `:latest` from GHCR and run it against whatever folder
+you are in. CI rebuilds weekly.
+
+## Run (copy / paste)
+
+From any repo root, host PowerShell + Podman:
+
+```powershell
+podman pull ghcr.io/ljmitch/azadmin:latest
+
+podman run -it --rm `
+  -v ${PWD}:/work -w /work `
+  -v admin_az:/root/.azure `
+  -v admin_azps:/root/.Azure `
+  -v admin_graph:/root/.local/share/IdentityCache `
+  -v admin_kube:/root/.kube `
+  ghcr.io/ljmitch/azadmin:latest
+```
+
+One line (same thing):
+
+```powershell
+podman run -it --rm -v ${PWD}:/work -w /work -v admin_az:/root/.azure -v admin_azps:/root/.Azure -v admin_graph:/root/.local/share/IdentityCache -v admin_kube:/root/.kube ghcr.io/ljmitch/azadmin:latest
+```
+
+No credential cache (fresh login every time):
+
+```powershell
+podman run -it --rm -v ${PWD}:/work -w /work ghcr.io/ljmitch/azadmin:latest
+```
+
+Pin a day's CI build instead of floating `latest`: `ghcr.io/ljmitch/azadmin:2026-09-16` (YYYY-MM-DD). Swap `podman` for `docker` if that is your engine.
+
+Volumes, device-code login, one-shots: [docs/USAGE.md](docs/USAGE.md).
+
+## What's in it
 
 | Layer | Contents |
 |---|---|
@@ -29,7 +64,10 @@ day-to-day Azure / Microsoft 365 admin work:
   Mixing versions across leaves recreates the TypeLoadException scar
   (see docs/TROUBLESHOOTING.md).
 
-## Quickstart (podman)
+## Build locally
+
+When you are changing the Dockerfile, not when you just want a shell.
+Full runbook: [docs/BUILD.md](docs/BUILD.md).
 
 ```powershell
 # Build (floats resolve at build time)
@@ -38,13 +76,13 @@ podman build -t admin-toolbox:latest .
 # Pin examples (yq / helm only; modules float to gallery latest)
 podman build -t admin-toolbox:latest --build-arg YQ_VERSION=v4.48.2 .
 
-# Smoke test - MUST bind-mount the repo so the script is visible
+# Smoke test - MUST bind-mount this repo so the script is visible
 podman run --rm `
   -v ${PWD}:/work -w /work `
   admin-toolbox:latest `
   pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
 
-# Use it (full credential persistence - see docs/USAGE.md for the options table)
+# Run the local tag the same way as GHCR (swap the image name)
 podman run -it --rm `
   -v ${PWD}:/work -w /work `
   -v admin_az:/root/.azure `
@@ -52,15 +90,6 @@ podman run -it --rm `
   -v admin_graph:/root/.local/share/IdentityCache `
   -v admin_kube:/root/.kube `
   admin-toolbox:latest
-```
-
-(`docker` runs identically if Podman isn't your constraint.)
-
-CI on GitHub Actions publishes `ghcr.io/ljmitch/azadmin` after verify
-(see `docs/BUILD.md`). Local Podman builds are unchanged.
-
-```powershell
-podman pull ghcr.io/ljmitch/azadmin:latest
 ```
 
 ## Repo map
@@ -89,7 +118,8 @@ podman pull ghcr.io/ljmitch/azadmin:latest
 4. Run `Verify-Toolbox.ps1` before pinning the tag
 
 See `docs/BUILD.md` for the full runbook and `docs/USAGE.md` for the login
-persistence matrix (full / stateless / partial).
+persistence matrix (full / stateless / partial). Day to day, prefer
+`podman pull ghcr.io/ljmitch/azadmin:latest` over a local rebuild.
 
 ## Notes
 

@@ -60,7 +60,13 @@ obvious `apt-get install` lines.
 
 ## Build and verify
 
-Host is Windows PowerShell + Podman. Full runbook: [docs/BUILD.md](docs/BUILD.md).
+Host is Windows PowerShell + Podman. Day to day, pull GHCR rather than build:
+
+```powershell
+podman pull ghcr.io/ljmitch/azadmin:latest
+```
+
+Local rebuild runbook: [docs/BUILD.md](docs/BUILD.md).
 
 ```powershell
 podman build -t admin-toolbox:latest .

@@ -1,11 +1,23 @@
 # USAGE runbook
 
-Day-to-day ways to run the toolbox. Everything assumes Windows PowerShell on
-the host + Podman Desktop with its WSL2 machine running.
+Day-to-day ways to run the toolbox. Host: Windows PowerShell + Podman Desktop
+(WSL2 machine running). Image from CI:
 
-## Interactive session (most common)
+```text
+ghcr.io/ljmitch/azadmin:latest
+```
 
-From anywhere you want to work - usually a repo root - run:
+Local builds use `admin-toolbox:latest` instead. Same flags; swap the name.
+
+## Pull and run (copy / paste)
+
+```powershell
+podman pull ghcr.io/ljmitch/azadmin:latest
+```
+
+### Interactive session (credentials persist)
+
+From anywhere you want to work - usually a repo root:
 
 ```powershell
 podman run -it --rm `
@@ -14,8 +26,17 @@ podman run -it --rm `
   -v admin_azps:/root/.Azure `
   -v admin_graph:/root/.local/share/IdentityCache `
   -v admin_kube:/root/.kube `
-  admin-toolbox:latest
+  ghcr.io/ljmitch/azadmin:latest
 ```
+
+One line if backticks misbehave:
+
+```powershell
+podman run -it --rm -v ${PWD}:/work -w /work -v admin_az:/root/.azure -v admin_azps:/root/.Azure -v admin_graph:/root/.local/share/IdentityCache -v admin_kube:/root/.kube ghcr.io/ljmitch/azadmin:latest
+```
+
+Pin a CI day: `ghcr.io/ljmitch/azadmin:YYYY-MM-DD` instead of `:latest`.
+Swap `podman` for `docker` if that is your engine.
 
 You land in `pwsh` with `/work` bind-mounted to the host folder - edits made
 inside the container land on the host immediately (same files, not copies).
@@ -29,13 +50,7 @@ What each flag is doing, one line each:
   podman WSL2 VM
 - `-w /work` - start in there
 - 4x `-v admin_...` - named volumes that persist between runs
-- `admin-toolbox:latest` - the image; choose a dated tag to pin a build
-
-Single-line equivalent if backtick line-continuations misbehave on paste:
-
-```powershell
-podman run -it --rm -v ${PWD}:/work -w /work -v admin_az:/root/.azure -v admin_azps:/root/.Azure -v admin_graph:/root/.local/share/IdentityCache -v admin_kube:/root/.kube admin-toolbox:latest
-```
+- `ghcr.io/ljmitch/azadmin:latest` - CI image; dated tag to pin a build
 
 ## Login persistence options
 
@@ -57,7 +72,7 @@ Guaranteed zero token carry-over between sessions. Use this for:
 - when you want deterministic "log in fresh every time"
 
 ```powershell
-podman run -it --rm -v ${PWD}:/work -w /work admin-toolbox:latest
+podman run -it --rm -v ${PWD}:/work -w /work ghcr.io/ljmitch/azadmin:latest
 ```
 
 `az login` / `Connect-AzAccount` / `Connect-MgGraph` still work normally
@@ -78,7 +93,7 @@ tokens fresh each session:
 podman run -it --rm -v ${PWD}:/work -w /work `
   -v admin_az:/root/.azure `
   -v admin_azps:/root/.Azure `
-  admin-toolbox:latest
+  ghcr.io/ljmitch/azadmin:latest
 ```
 
 ## Managing those persisted credentials
@@ -149,14 +164,14 @@ Run a single command/script without dropping into a shell (scriptable):
 podman run --rm -v ${PWD}:/work -w /work `
   -v admin_az:/root/.azure -v admin_azps:/root/.Azure `
   -v admin_graph:/root/.local/share/IdentityCache `
-  admin-toolbox:latest pwsh -NoProfile -File .\scripts\my-organiser.ps1
+  ghcr.io/ljmitch/azadmin:latest pwsh -NoProfile -File .\scripts\my-organiser.ps1
 ```
 
 ### Stateless one-shot
 
 ```powershell
 podman run --rm -v ${PWD}:/work -w /work `
-  admin-toolbox:latest pwsh -NoProfile -Command "
+  ghcr.io/ljmitch/azadmin:latest pwsh -NoProfile -Command "
     az login --use-device-code;
     Get-AzSubscription
   "
@@ -191,23 +206,23 @@ DO NOT auto-apply; rebuild the image to bake a new one, or mount over it:
 ```powershell
 podman run -it --rm -v ${PWD}:/work -w /work `
   -v ${PWD}/config/powershell/Microsoft.PowerShell_profile.ps1:/root/.config/powershell/Microsoft.PowerShell_profile.ps1 `
-  admin-toolbox:latest
+  ghcr.io/ljmitch/azadmin:latest
 ```
 
 ## Look under the hood
 
 ```powershell
 # Verify - mount the repo so the script is visible (no credential volumes needed)
-podman run --rm -v ${PWD}:/work -w /work admin-toolbox:latest `
+podman run --rm -v ${PWD}:/work -w /work ghcr.io/ljmitch/azadmin:latest `
   pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
 
 # What's on disk?
-podman images admin-toolbox
+podman images ghcr.io/ljmitch/azadmin
 podman volume ls
 
 # Which version of a floating tool did this build actually resolve?
-podman image inspect admin-toolbox:latest --format "{{json .Config.Labels}}"
-podman image history admin-toolbox:latest --no-trunc | Select-String "Installing"
+podman image inspect ghcr.io/ljmitch/azadmin:latest --format "{{json .Config.Labels}}"
+podman image history ghcr.io/ljmitch/azadmin:latest --no-trunc | Select-String "Installing"
 ```
 
 The second pair of commands helps when a floating build pulled a "latest"

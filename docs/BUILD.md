@@ -2,6 +2,15 @@
 
 How to build, tag, and version-bump the toolbox image.
 
+Day to day you do **not** need this file. Pull and run:
+
+```powershell
+podman pull ghcr.io/ljmitch/azadmin:latest
+```
+
+Then the `podman run` in [docs/USAGE.md](USAGE.md) / [README.md](../README.md).
+The rest of this page is for changing the image itself.
+
 ## Standard build
 
 ```powershell
@@ -145,9 +154,20 @@ Tags pushed after verify: `latest`, `YYYY-MM-DD`, `sha-<shortsha>`.
 
 ```powershell
 podman pull ghcr.io/ljmitch/azadmin:latest
+podman pull ghcr.io/ljmitch/azadmin:2026-09-16   # pin a day's build
 ```
 
-(`docker pull` is the same image.)
+Run it (full persist) from any folder:
+
+```powershell
+podman run -it --rm `
+  -v ${PWD}:/work -w /work `
+  -v admin_az:/root/.azure `
+  -v admin_azps:/root/.Azure `
+  -v admin_graph:/root/.local/share/IdentityCache `
+  -v admin_kube:/root/.kube `
+  ghcr.io/ljmitch/azadmin:latest
+```
 
 First successful publish creates a **private** GHCR package
 ([docs](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pushing-container-images)).
@@ -168,5 +188,4 @@ podman push <your-acr>.azurecr.io/admin-toolbox:latest
 
 Only do this if the image content is genuinely shareable - it contains no
 secrets, but your org's policy is the final word. For a public repo the
-correct target is usually GitHub Packages (`ghcr.io/<your-user>/admin-toolbox`
-after `gh auth login`).
+correct target is GHCR (`ghcr.io/ljmitch/azadmin`), which CI already publishes.

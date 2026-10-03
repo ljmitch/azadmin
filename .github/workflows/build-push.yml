@@ -56,6 +56,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Base image in use
+        run: |
+          echo "Building from base image: ${BASE_IMAGE}"
+          echo "Repo variable value: '${{ vars.BASE_IMAGE }}' (blank = workflow fallback was used)"
+
       - name: Image name (GHCR requires lowercase)
         run: echo "IMAGE=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 

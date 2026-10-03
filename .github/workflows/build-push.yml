@@ -39,6 +39,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  BASE_IMAGE: ubuntu:24.04
   REGISTRY: ghcr.io
 
 jobs:
@@ -64,8 +65,8 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.cache_bust }}" = "true" ]; then
             stamp="$(date -u +%Y%m%d%H%M%S)"
             echo "build_date=${stamp}" >> "$GITHUB_OUTPUT"
-            echo "Pulling a fresh ubuntu:24.04 so apt-get upgrade is not sitting on a stale base."
-            docker pull ubuntu:24.04
+            echo "Pulling a fresh ${BASE_IMAGE} so apt-get upgrade is not sitting on a stale base."
+            docker pull "${BASE_IMAGE}"
           else
             echo "build_date=unknown" >> "$GITHUB_OUTPUT"
           fi
@@ -102,6 +103,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
             BUILD_DATE=${{ steps.bust.outputs.build_date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 # ---------------------------------------------------------------------------
 # azure-admin-toolbox
-# Ubuntu 24.04 LTS (noble) + PowerShell 7 + Azure CLI + Az + Microsoft.Graph
+# Ubuntu + PowerShell 7 + Azure CLI + Az + Microsoft.Graph
+# + Terraform + tflint + checkov + kubectl + helm + azcopy + azd
 #
 # Version philosophy:
 #   - Everything floats to latest BY DEFAULT, resolved at build time.
@@ -9,7 +10,8 @@
 #   - Refresh floating layers deliberately with --build-arg BUILD_DATE=<ts>.
 # ---------------------------------------------------------------------------
 
-FROM ubuntu:24.04
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
 
 # ---- Tool versions ----------------------------------------------------------
 # Pass "latest" (the default) to resolve at build time via GitHub releases,

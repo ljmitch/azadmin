@@ -1,7 +1,7 @@
 # Azure Admin Toolbox
 
 Reusable Azure / Microsoft 365 admin toolbox image (pwsh 7, az, Graph, IaC,
-K8s). Day to day: pull `:latest` from GHCR and run it against whatever folder
+K8s, .NET 10 and Functions Core Tools v4). Day to day: pull `:latest` from GHCR and run it against whatever folder
 you are in. CI rebuilds weekly.
 
 ## Run (copy / paste)
@@ -34,14 +34,15 @@ podman run -it --rm -v ${PWD}:/work -w /work ghcr.io/ljmitch/azadmin:latest
 
 Pin a day's CI build instead of floating `latest`: `ghcr.io/ljmitch/azadmin:2026-09-16` (YYYY-MM-DD). Swap `podman` for `docker` if that is your engine.
 
-Volumes, device-code login, one-shots: [docs/USAGE.md](docs/USAGE.md).
+Volumes, device-code login, one-shots and mounted Functions projects: [docs/USAGE.md](docs/USAGE.md).
 
 ## What's in it
 
 | Layer | Contents |
 |---|---|
-| Base | Ubuntu 24.04 LTS (noble) |
+| Base | Ubuntu 24.04 LTS (noble); .NET SDK copied from Microsoft's maintained `10.0-noble` image |
 | Shells | PowerShell 7.x (pwsh), bash |
+| Functions development | .NET 10 SDK + Core Tools v4; Azurite stays in a separate container |
 | Azure | az CLI (+ Bicep), Az PowerShell, azd, gh CLI |
 | Azure extensions | `azure-devops`, `aks-preview`, `ssh` |
 | M365 / Graph | Curated Microsoft.Graph leaf set (10 modules, gallery latest at build), ExchangeOnlineManagement |
@@ -59,8 +60,10 @@ Volumes, device-code login, one-shots: [docs/USAGE.md](docs/USAGE.md).
   MS PMC).
 - Pin anything explicitly with `--build-arg`, e.g.:
   `podman build -t admin-toolbox:latest --build-arg YQ_VERSION=v4.48.2 .`
-- Force re-resolution of floaters by passing a build date:
-  `podman build --build-arg BUILD_DATE=$(Get-Date -Format yyyyMMddHHmm) -t admin-toolbox:latest .`
+- Refresh both source images and re-resolve floaters:
+  `podman build --pull=always --build-arg BUILD_DATE=$(Get-Date -Format yyyyMMddHHmm) -t admin-toolbox:latest .`
+  .NET stays on the 10.0/noble channel; `BUILD_DATE` alone does not refresh
+  that upstream SDK image. Docker's equivalent flag is `--pull`.
 - Graph leaves install together in one `Install-Module` (no per-leaf version).
   Mixing versions across leaves recreates the TypeLoadException scar
   (see docs/TROUBLESHOOTING.md).

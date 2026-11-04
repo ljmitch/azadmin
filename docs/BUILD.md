@@ -23,27 +23,61 @@ Cached layers mean a plain rebuild won't re-resolve floating tools - yq, helm,
 tflint, checkov, az CLI, Graph/Az modules etc. would serve you last-build's
 "latest". Two options:
 
-**Usual** - cache-buster ARG. Invalidates every layer after `ARG BUILD_DATE`
-(Ubuntu `apt-get upgrade` + all tools). `FROM ubuntu:24.04` stays cached;
-the next RUN still `apt-get update && upgrade`, so libc/base-files security
-updates land without pulling a newer base.
+**Usual** - pull both source images and pass the cache-buster ARG. The final
+base stays `ubuntu:24.04`; a build stage supplies .NET from
+`mcr.microsoft.com/dotnet/sdk:10.0-noble`. `BUILD_DATE` invalidates the Ubuntu
+upgrade/tool layers, but cannot update the SDK bytes in a cached source image.
+Use `--pull=always` for Podman (`--pull` for Docker) as well.
 
 ```powershell
-podman build --build-arg "BUILD_DATE=$(Get-Date -Format o)" -t admin-toolbox:latest .
+podman build --pull=always --build-arg "BUILD_DATE=$(Get-Date -Format o)" -t admin-toolbox:latest .
 ```
 
-**Nuclear** - ignore every layer. Also `podman pull ubuntu:24.04` first if you
-want a newer base tag, not just upgraded packages on top of the old one.
-Slowest:
+**Nuclear** - pull source images and ignore every build layer. Slowest:
 
 ```powershell
-podman pull ubuntu:24.04
-podman build --no-cache -t admin-toolbox:latest .
+podman build --pull=always --no-cache -t admin-toolbox:latest .
 ```
+
+## Functions branch acceptance
+
+Use a separate local candidate tag while changing the image:
+
+```powershell
+podman build --pull=always --build-arg "BUILD_DATE=$(Get-Date -Format o)" -t admin-toolbox:functions .
+podman run --rm -v ${PWD}:/work -w /work admin-toolbox:functions pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
+podman image inspect admin-toolbox:functions --format '{{.Size}}'
+```
+
+Compare size/history with the previous image if retained. A rebuild plus
+`Verify-Toolbox.ps1` is required before promoting a tag. Also build/run the
+intended .NET project and test its HTTP/queue path separately; the version
+smoke test is not an application integration test. This branch has not been
+published merely because these source changes exist.
+
+For Docker Desktop, the build equivalent is `docker build --pull` with the
+same build arg/tag; the run/inspect commands use `docker` in place of `podman`.
+
+Local check on 2026-11-04: Docker built `admin-toolbox:functions-review` from
+this branch and the complete `Verify-Toolbox.ps1` passed. The image reported
+Ubuntu 24.04.5, .NET SDK 10.0.403, Core Tools 4.16.0 and PowerShell 7.6.9.
+A temporary .NET 10 HTTP function compiled/started inside it and returned
+HTTP 200 using a separate local Azurite container. No Azure login, deployment,
+Service Bus message operation or registry push was performed. The disposable
+test containers/network were removed; the local review image was retained.
+
+The built image reported 7,341,607,841 bytes (about 7.3 GB unpacked). Its
+`/usr/share/dotnet` directory occupied about 624 MiB and Core Tools about
+1.3 GiB. This is not a measured before/after delta against an older image:
+other floating tools also refreshed. Compressed registry downloads and shared
+layer storage differ from the unpacked total. The extra capability is
+intentional for this personal toolbox; Azurite/Node/npm were not added.
 
 ## Pinning instead of floating
 
-Every tool that floats by default accepts a `--build-arg` override:
+Yq/Helm expose version build args. `DOTNET_SDK_IMAGE` can pin the .NET SDK
+source to a compatible noble .NET 10 image tag/digest. Other tool policies
+are listed below; they do not all expose version args:
 
 ```powershell
 # Specific release of yq or helm:
@@ -77,10 +111,12 @@ podman run --rm -v ${PWD}:/work -w /work admin-toolbox:latest pwsh -NoProfile -F
 
 All checks must say `VERIFY PASSED` before you tag the image.
 
-## Current pin/float policy (Sep 2026)
+## Current pin/float policy (Nov 2026)
 
 | Component | Mode | Control |
 |---|---|---|
+| .NET SDK source | rolling `10.0-noble` image, final OS stays Ubuntu 24.04 | refresh with `--pull=always`; `DOTNET_SDK_IMAGE` can select a compatible pinned tag/digest |
+| Functions Core Tools | GA v4 from PMC noble apt | refresh install layer with `BUILD_DATE` or `--no-cache` |
 | Ubuntu base packages (`libc6`, `base-files`, ...) | `apt-get upgrade` on the first apt layer | cache-bust (`BUILD_DATE`) or `--no-cache`; a plain rebuild reuses the old upgrade |
 | yq | floats to GitHub latest (default) | `--build-arg YQ_VERSION=vX.Y.Z` to pin |
 | helm | floats to GitHub latest (default) | `--build-arg HELM_VERSION=vX.Y.Z` to pin |
@@ -144,10 +180,10 @@ target GHCR.
 
 Triggers:
 
-- Weekly Monday 04:00 UTC - always passes `BUILD_DATE` and pulls a fresh
-  `ubuntu:24.04` so floaters and apt security updates re-resolve
+- Weekly Monday 04:00 UTC - passes `BUILD_DATE`; Buildx `pull: true` refreshes
+  Ubuntu and the SDK source, then floating apt/tools resolve again
 - Push to `main` that touches the Dockerfile, scripts, profile, or the
-  workflow itself - uses layer cache, no `BUILD_DATE`
+  workflow itself - pulls source images and uses layer cache, no `BUILD_DATE`
 - Actions tab -> Run workflow - optional cache-bust checkbox (on by default)
 
 Tags pushed after verify: `latest`, `YYYY-MM-DD`, `sha-<shortsha>`.

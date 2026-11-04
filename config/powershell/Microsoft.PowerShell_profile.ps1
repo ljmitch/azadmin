@@ -18,6 +18,8 @@ function Get-ToolboxVersions {
         AzCLI       = (az version --query '"azure-cli"' -o tsv 2>$null)
         AzModule    = (Get-Module Az -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).Version
         GraphAuth   = (Get-Module Microsoft.Graph.Authentication -ListAvailable | Select-Object -First 1).Version
+        DotnetSDKs  = (dotnet --list-sdks 2>$null) -join '; '
+        Functions   = (func --version 2>$null | Select-Object -First 1)
         GhCLI       = (gh --version 2>$null | Select-Object -First 1) -replace 'gh version ',''
         Azd         = (azd version 2>$null | Select-Object -First 1)
         AzCopy      = (azcopy --version 2>$null | Select-Object -First 1) -replace 'azcopy version ',''

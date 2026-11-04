@@ -64,8 +64,7 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.cache_bust }}" = "true" ]; then
             stamp="$(date -u +%Y%m%d%H%M%S)"
             echo "build_date=${stamp}" >> "$GITHUB_OUTPUT"
-            echo "Pulling a fresh ubuntu:24.04 so apt-get upgrade is not sitting on a stale base."
-            docker pull ubuntu:24.04
+            echo "Refreshing floated tools; the build pulls both Ubuntu and the .NET SDK stage."
           else
             echo "build_date=unknown" >> "$GITHUB_OUTPUT"
           fi
@@ -96,6 +95,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          pull: true
           load: true
           push: false
           provenance: false

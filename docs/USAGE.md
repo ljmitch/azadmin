@@ -194,6 +194,59 @@ podman run --rm -v ${PWD}:/work -w /work `
 | Big blob copy | `azcopy copy "https://<src>..." "https://<dst>..." --recursive=true` |
 | Look at versions | `Get-ToolboxVersions` |
 
+## Build a mounted .NET / Functions project
+
+Use a rebuilt and verified local candidate until this version is published.
+From the application project folder on the host, not this toolbox repo:
+
+```powershell
+podman run -it --rm --name admin-functions -p 127.0.0.1:7071:7071 `
+  -v ${PWD}:/work/FunctionAppLab -w /work/FunctionAppLab `
+  -v admin_nuget:/nuget/packages -e NUGET_PACKAGES=/nuget/packages `
+  -v admin_func_bin:/work/FunctionAppLab/bin `
+  -v admin_func_obj:/work/FunctionAppLab/obj `
+  admin-toolbox:functions
+```
+
+Use `docker` instead of `podman` for Docker Desktop. The source is a live
+writable bind mount. Linux bin/obj outputs are isolated from Windows builds;
+use distinct volume names when switching between unrelated projects. No login
+volumes are mounted in this example.
+
+Inside the PowerShell container shell:
+
+```powershell
+dotnet --list-sdks
+func --version
+dotnet restore
+dotnet build ./FunctionAppLab.csproj
+dotnet publish ./FunctionAppLab.csproj --configuration Release --output ./artifacts/publish
+```
+
+Use the actual project filename. A repo's `global.json` still controls SDK
+selection; check it against the container's SDKs rather than deleting it.
+The publish output is under the source mount, so it remains on the host.
+
+For local execution, configure host storage first. Azurite is intentionally
+not inside this toolbox. Run its official image separately on a shared
+container network and supply the explicit emulator blob/queue/table endpoints
+in `AzureWebJobsStorage`. `UseDevelopmentStorage=true` alone points at the
+toolbox's own loopback, not another container. A second container is not a
+local Service Bus emulator.
+
+Once storage and application settings are correct:
+
+```powershell
+dotnet run -- --address 0.0.0.0 --port 7071
+```
+
+From a host browser/terminal, call the application's actual route on
+`http://localhost:7071`. Ctrl+C stops the host; `exit` leaves the main shell
+and `--rm` removes the toolbox container. Source edits remain on the host;
+NuGet/bin/obj volumes remain until deliberately removed. Azure logins are
+separate from the host; use device-code login only when needed. An enabled
+queue trigger can consume real messages as soon as the host starts.
+
 ## Profile helpers (preloaded inside the image)
 
 - `Get-ToolboxVersions` - prints OS / pwsh / az / Az / Graph / Terraform / kubectl / helm versions

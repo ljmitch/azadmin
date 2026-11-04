@@ -7,7 +7,7 @@ pin/float policy (last baselined Sep 2026).
 ## System-level (apt, Ubuntu noble archive)
 
 The first apt `RUN` does `apt-get upgrade` before `install`, so packages that
-already shipped in `ubuntu:24.04` (`libc6`, `base-files`, ...) take
+already shipped in the final `ubuntu:24.04` base (`libc6`, `base-files`, ...) take
 noble-updates / noble-security at build time. `apt-get install` alone would
 leave them frozen. Re-run that layer with `BUILD_DATE` or `--no-cache`.
 
@@ -81,7 +81,7 @@ here so they stay below the main toolset.
 
 | Repo | Supplies | Notes |
 |---|---|---|
-| `packages.microsoft.com/config/ubuntu/$VERSION_ID/` (PMC) | PowerShell (pwsh) | noble feed is the working base; resolute feed lags |
+| `packages.microsoft.com/config/ubuntu/$VERSION_ID/` (PMC) | PowerShell (pwsh), Functions Core Tools v4 | noble feed is the working base; resolute feed lags |
 | `packages.microsoft.com/repos/azure-cli/` (codename-resolved) | Azure CLI + Bicep | separate MS feed - NEVER in the main PMC repo |
 | `apt.releases.hashicorp.com` (codename-resolved) | Terraform | no hardcoded "noble" string; survives base bumps |
 | `cli.github.com/packages` | GitHub CLI (`gh`) | added because GitHub repo work is in-scope |
@@ -92,6 +92,8 @@ here so they stay below the main toolset.
 | Tool | How | Versioned | Why it's here |
 |---|---|---|---|
 | `pwsh` | PMC apt | floats with PMC on noble | The shell the image drops into |
+| `dotnet` SDK | `/usr/share/dotnet` copied from `mcr.microsoft.com/dotnet/sdk:10.0-noble` | floats within .NET 10; `DOTNET_SDK_IMAGE` can pin a compatible image/digest | Restore, build, test and publish .NET 10 projects |
+| `func` | PMC apt, `azure-functions-core-tools-4` | floats within GA v4 | Scaffold/run Functions locally and publish through an authorised workflow |
 | `gh` | github-cli apt repo | floats | GitHub repo/PR/Actions work inside the container |
 | `az` CLI | azure-cli apt repo | floats | ARM/Bicep deployment + subscription plumbing; also installs Bicep via `az bicep install` |
 | `bicep` | via `az bicep install` | floats | Bicep templates without a separate download |
@@ -105,6 +107,27 @@ here so they stay below the main toolset.
 | `helm` | upstream tarball, version resolved from GitHub | floats to latest by default; `--build-arg HELM_VERSION=vX.Y.Z` pins | K8s package manager |
 | `azcopy` | `aka.ms/downloadazcopy-v10-linux` tarball | floats | Large blob/file copy between storage accounts + local |
 | `psql` | PGDG apt (postgres repo) | floats with PGDG `postgresql-client` metapackage | Azure Database for PostgreSQL connections |
+
+## Functions tooling and image size
+
+The final image defaults to `ubuntu:24.04` through `BASE_IMAGE`. A build stage supplies the
+maintained .NET 10 SDK, reference packs and shared runtimes. Only
+`/usr/share/dotnet` is copied, so the source SDK image's bundled PowerShell
+is not installed a second time; this toolbox keeps its existing PMC pwsh.
+The base apt layer explicitly supplies the native .NET dependencies.
+
+The SDK and Core Tools add real size. This is an interactive admin/development
+toolbox, not an application runtime image, so the capability is intentional.
+There is no new Node/npm installation, emulator process or development workload
+bundle. Run Azurite separately when required. The 2026-11-04 local candidate
+was about 7.3 GB unpacked; SDK/Core Tools directories together occupied
+roughly 2 GB. See BUILD.md for the actual
+verification and HTTP smoke-test evidence. There is no clean older-image delta
+or compressed-download claim.
+
+`Get-ToolboxVersions` reports SDKs and Core Tools. The image verification checks
+that a 10.0 SDK exists and that Core Tools v4 executes successfully. It does not
+prove an application's dependencies, Azure identity or queue consumption work.
 
 ## az CLI extensions (installed via `az extension add`)
 
@@ -140,6 +163,8 @@ per-leaf pin ARG; bump everything by rebuilding with `BUILD_DATE`.
 
 | ARG | Default | Effect |
 |---|---|---|
+| `BASE_IMAGE` | `ubuntu:24.04` | final image base; GitHub repository variable or local build arg |
+| `DOTNET_SDK_IMAGE` | `mcr.microsoft.com/dotnet/sdk:10.0-noble` | source SDK image; pin a compatible noble .NET 10 tag/digest if required |
 | `YQ_VERSION` | `latest` | resolves from `api.github.com/repos/mikefarah/yq/releases/latest` at build; pin with explicit `vX.Y.Z` to freeze |
 | `HELM_VERSION` | `latest` | same pattern - `helm/helm` repo |
 | `TF_VERSION` | informational only | Terraform floats via apt regardless; ARG documents intent |

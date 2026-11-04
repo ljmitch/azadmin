@@ -110,6 +110,29 @@ Test-Binary -Name 'nc'       -VersionArg '-h'
 Test-Binary -Name 'traceroute'-VersionArg '--version'
 Write-Host ""
 
+Write-Host "== .NET 10 / Functions =="
+try {
+    $sdks = & dotnet --list-sdks 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "dotnet --list-sdks exited $LASTEXITCODE" }
+    $net10 = @($sdks | Where-Object { $_ -match '^10\.0\.\d+\s+\[' })
+    if ($net10.Count -eq 0) { throw 'No .NET 10 SDK found; a runtime alone cannot build functions.' }
+    Write-Host "  ✔ .NET 10 SDK - $($net10 -join '; ')"
+} catch {
+    Write-Host "  ✘ .NET 10 SDK - $($_.Exception.Message)" -ForegroundColor Red
+    $failures++
+}
+try {
+    $coreTools = & func --version 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "func --version exited $LASTEXITCODE" }
+    $coreToolsVersion = @($coreTools | Where-Object { $_ -match '^4\.\d+\.\d+' })
+    if ($coreToolsVersion.Count -eq 0) { throw "Expected Core Tools v4; got: $coreTools" }
+    Write-Host "  ✔ Functions Core Tools - $($coreToolsVersion -join '; ')"
+} catch {
+    Write-Host "  ✘ Functions Core Tools - $($_.Exception.Message)" -ForegroundColor Red
+    $failures++
+}
+Write-Host ""
+
 Write-Host "== Azure CLI extensions =="
 Test-Extension -Name 'azure-devops'
 Test-Extension -Name 'aks-preview'

@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # azure-admin-toolbox
 # Ubuntu + PowerShell 7 + Azure CLI + Az + Microsoft.Graph
-# + Terraform + tflint + checkov + kubectl + helm + azcopy + azd
+# + Terraform + tflint + checkov + kubectl + helm + azcopy + azd + .NET 10 + Functions
 #
 # Version philosophy:
 #   - Everything floats to latest BY DEFAULT, resolved at build time.
@@ -10,7 +10,12 @@
 #   - Refresh floating layers deliberately with --build-arg BUILD_DATE=<ts>.
 # ---------------------------------------------------------------------------
 
+# Copy only .NET from the maintained noble SDK image. Keep the final Ubuntu
+# base and PMC PowerShell install; the SDK image also bundles its own pwsh.
 ARG BASE_IMAGE=ubuntu:24.04
+ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0-noble
+FROM ${DOTNET_SDK_IMAGE} AS dotnet-sdk
+
 FROM ${BASE_IMAGE}
 
 # ---- Tool versions ----------------------------------------------------------
@@ -24,7 +29,7 @@ ARG HELM_VERSION=latest
 ARG BUILD_DATE=unknown
 
 LABEL org.opencontainers.image.title="azure-admin-toolbox" \
-      org.opencontainers.image.description="Reusable Azure/M365 admin toolbox (pwsh7, az, Az, Graph, TF, AKS)" \
+      org.opencontainers.image.description="Reusable Azure/M365 admin toolbox (pwsh7, az, Az, Graph, TF, AKS, .NET 10, Functions)" \
       org.opencontainers.image.source="https://github.com/ljmitch/azadmin" \
       org.opencontainers.image.licenses="MIT"
 
@@ -34,7 +39,7 @@ LABEL org.opencontainers.image.title="azure-admin-toolbox" \
 # noble-updates + noble-security. --force-confold keeps existing conffiles.
 # dnsutils/iputils/netcat: network debugging is a core workload.
 # Network extras: extra noble-archive CLIs after the core set. No extra feeds.
-# build-essential stays out (no compilation in this image).
+# build-essential stays out; managed .NET builds do not need a native compiler.
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
       -o Dpkg::Options::="--force-confdef" \
@@ -43,6 +48,7 @@ RUN apt-get update \
       wget curl apt-transport-https ca-certificates gnupg lsb-release \
       git unzip zip less jq rsync \
       python3 python3-pip \
+      libicu74 libssl3t64 libstdc++6 libatomic1 tzdata \
       procps \
       dnsutils iputils-ping netcat-openbsd traceroute \
       openssh-client \
@@ -50,6 +56,17 @@ RUN apt-get update \
       iperf3 tcpdump \
       socat openssl nmap ipcalc whois \
  && rm -rf /var/lib/apt/lists/*
+
+# ---- .NET 10 SDK via Microsoft's Ubuntu noble image ------------------------
+# /usr/share/dotnet contains the SDK, reference packs and shared runtimes.
+# Base refresh requires pulling the SDK stage too; BUILD_DATE alone cannot do it.
+COPY --from=dotnet-sdk /usr/share/dotnet /usr/share/dotnet
+ENV DOTNET_ROOT=/usr/share/dotnet \
+    DOTNET_RUNNING_IN_CONTAINER=true \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=true \
+    DOTNET_USE_POLLING_FILE_WATCHER=true
+RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 
 # ---- PostgreSQL client via PGDG (latest stable, not Ubuntu's aged copy) -----
 # Ubuntu noble ships postgresql-client-16; PGDG bootstrap script gives 18 and
@@ -60,14 +77,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends postgresql-comm
  && apt-get install -y postgresql-client \
  && rm -rf /var/lib/apt/lists/*
 
-# ---- PowerShell 7 via packages.microsoft.com (PMC) ---------------------------
+# ---- PowerShell 7 + Core Tools v4 via packages.microsoft.com (PMC) -----------
 # PMC lag scar: new pwsh announcements can lag the feed by days. See
 # docs/TROUBLESHOOTING.md before assuming breakage is ours.
 RUN . /etc/os-release \
  && TERM=dumb wget -q https://packages.microsoft.com/config/ubuntu/$VERSION_ID/packages-microsoft-prod.deb \
  && TERM=dumb dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb \
  && apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y powershell \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends powershell azure-functions-core-tools-4 \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- Azure CLI - separate Microsoft feed (docs-confirmed on noble) -----------

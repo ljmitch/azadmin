@@ -17,33 +17,87 @@ The rest of this page is for changing the image itself.
 podman build -t admin-toolbox:latest .
 ```
 
+## GitHub repository image variables
+
+The workflow reads both repository variables under Settings -> Secrets and
+variables -> Actions -> Variables and passes them as Docker build args:
+
+| Repository variable / build arg | Fallback when the repository variable is blank |
+|---|---|
+| `BASE_IMAGE` | `ubuntu:24.04` |
+| `DOTNET_SDK_IMAGE` | `mcr.microsoft.com/dotnet/sdk:10.0-noble` |
+
+The source-image log step prints the resolved values and whether repository
+values were supplied. Buildx `pull: true` refreshes both stages. Merely adding
+a GitHub variable does not configure Docker unless the workflow passes it;
+both are wired explicitly here.
+
+Local builds use the Dockerfile defaults unless the same build args are
+supplied locally. GitHub variables are not downloaded into a local build.
+The supported/tested pairing remains Ubuntu 24.04 with the noble .NET 10 SDK;
+changing the base requires reviewing SDK/native package/feed compatibility.
+
 ## Fresh-rebuild (picks up "latest" floated versions properly)
 
 Cached layers mean a plain rebuild won't re-resolve floating tools - yq, helm,
 tflint, checkov, az CLI, Graph/Az modules etc. would serve you last-build's
 "latest". Two options:
 
-**Usual** - cache-buster ARG. Invalidates every layer after `ARG BUILD_DATE`
-(Ubuntu `apt-get upgrade` + all tools). `FROM ubuntu:24.04` stays cached;
-the next RUN still `apt-get update && upgrade`, so libc/base-files security
-updates land without pulling a newer base.
+**Usual** - pull both source images and pass the cache-buster ARG. The final
+base defaults to `ubuntu:24.04`; a build stage supplies .NET from
+`mcr.microsoft.com/dotnet/sdk:10.0-noble`. `BUILD_DATE` invalidates the Ubuntu
+upgrade/tool layers, but cannot update the SDK bytes in a cached source image.
+Use `--pull=always` for Podman (`--pull` for Docker) as well.
 
 ```powershell
-podman build --build-arg "BUILD_DATE=$(Get-Date -Format o)" -t admin-toolbox:latest .
+podman build --pull=always --build-arg "BUILD_DATE=$(Get-Date -Format o)" -t admin-toolbox:latest .
 ```
 
-**Nuclear** - ignore every layer. Also `podman pull ubuntu:24.04` first if you
-want a newer base tag, not just upgraded packages on top of the old one.
-Slowest:
+**Nuclear** - pull source images and ignore every build layer. Slowest:
 
 ```powershell
-podman pull ubuntu:24.04
-podman build --no-cache -t admin-toolbox:latest .
+podman build --pull=always --no-cache -t admin-toolbox:latest .
 ```
+
+## Functions branch acceptance
+
+Use a separate local candidate tag while changing the image:
+
+```powershell
+podman build --pull=always --build-arg "BUILD_DATE=$(Get-Date -Format o)" -t admin-toolbox:functions .
+podman run --rm -v ${PWD}:/work -w /work admin-toolbox:functions pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
+podman image inspect admin-toolbox:functions --format '{{.Size}}'
+```
+
+Compare size/history with the previous image if retained. A rebuild plus
+`Verify-Toolbox.ps1` is required before promoting a tag. Also build/run the
+intended .NET project and test its HTTP/queue path separately; the version
+smoke test is not an application integration test. This branch has not been
+published merely because these source changes exist.
+
+For Docker Desktop, the build equivalent is `docker build --pull` with the
+same build arg/tag; the run/inspect commands use `docker` in place of `podman`.
+
+Local check on 2026-11-04: Docker built `admin-toolbox:functions-review` from
+this branch and the complete `Verify-Toolbox.ps1` passed. The image reported
+Ubuntu 24.04.5, .NET SDK 10.0.403, Core Tools 4.16.0 and PowerShell 7.6.9.
+A temporary .NET 10 HTTP function compiled/started inside it and returned
+HTTP 200 using a separate local Azurite container. No Azure login, deployment,
+Service Bus message operation or registry push was performed. The disposable
+test containers/network were removed; the local review image was retained.
+
+The built image reported 7,341,607,841 bytes (about 7.3 GB unpacked). Its
+`/usr/share/dotnet` directory occupied about 624 MiB and Core Tools about
+1.3 GiB. This is not a measured before/after delta against an older image:
+other floating tools also refreshed. Compressed registry downloads and shared
+layer storage differ from the unpacked total. The extra capability is
+intentional for this personal toolbox; Azurite/Node/npm were not added.
 
 ## Pinning instead of floating
 
-Every tool that floats by default accepts a `--build-arg` override:
+Yq/Helm expose version build args. `DOTNET_SDK_IMAGE` can pin the .NET SDK
+source to a compatible noble .NET 10 image tag/digest. Other tool policies
+are listed below; they do not all expose version args:
 
 ```powershell
 # Specific release of yq or helm:
@@ -77,10 +131,13 @@ podman run --rm -v ${PWD}:/work -w /work admin-toolbox:latest pwsh -NoProfile -F
 
 All checks must say `VERIFY PASSED` before you tag the image.
 
-## Current pin/float policy (Sep 2026)
+## Current pin/float policy (Nov 2026)
 
 | Component | Mode | Control |
 |---|---|---|
+| Final base | `BASE_IMAGE`, default Ubuntu 24.04 | GitHub repository variable or local `--build-arg BASE_IMAGE=...`; other bases need compatibility review |
+| .NET SDK source | rolling `10.0-noble` image by default | refresh with `--pull=always`; `DOTNET_SDK_IMAGE` can select a compatible pinned tag/digest |
+| Functions Core Tools | GA v4 from PMC noble apt | refresh install layer with `BUILD_DATE` or `--no-cache` |
 | Ubuntu base packages (`libc6`, `base-files`, ...) | `apt-get upgrade` on the first apt layer | cache-bust (`BUILD_DATE`) or `--no-cache`; a plain rebuild reuses the old upgrade |
 | yq | floats to GitHub latest (default) | `--build-arg YQ_VERSION=vX.Y.Z` to pin |
 | helm | floats to GitHub latest (default) | `--build-arg HELM_VERSION=vX.Y.Z` to pin |
@@ -144,10 +201,10 @@ target GHCR.
 
 Triggers:
 
-- Weekly Monday 04:00 UTC - always passes `BUILD_DATE` and pulls a fresh
-  `ubuntu:24.04` so floaters and apt security updates re-resolve
+- Weekly Monday 04:00 UTC - passes `BUILD_DATE`; Buildx `pull: true` refreshes
+  Ubuntu and the SDK source, then floating apt/tools resolve again
 - Push to `main` that touches the Dockerfile, scripts, profile, or the
-  workflow itself - uses layer cache, no `BUILD_DATE`
+  workflow itself - pulls source images and uses layer cache, no `BUILD_DATE`
 - Actions tab -> Run workflow - optional cache-bust checkbox (on by default)
 
 Tags pushed after verify: `latest`, `YYYY-MM-DD`, `sha-<shortsha>`.
@@ -189,3 +246,42 @@ podman push <your-acr>.azurecr.io/admin-toolbox:latest
 Only do this if the image content is genuinely shareable - it contains no
 secrets, but your org's policy is the final word. For a public repo the
 correct target is GHCR (`ghcr.io/ljmitch/azadmin`), which CI already publishes.
+
+## Dependency updates and PR validation
+
+`.github/dependabot.yml` checks GitHub Actions every Monday at 09:30 UK time.
+Minor/patch updates are grouped; major updates get separate PRs for review.
+The limit is three open version-update PRs. Dependabot starts using this
+configuration after it reaches the default branch.
+
+This differs from the website configuration: there are no npm dependencies
+here. Docker update PRs are intentionally omitted. Ubuntu 24.04 and .NET 10
+noble are deliberate compatibility choices, their tags refresh on rebuild,
+and repository variables can override the Dockerfile defaults. Dependabot
+does not update those repository variables or the tools installed from
+apt, PowerShell Gallery and floating download URLs.
+
+`Validate toolbox PR / build-and-verify` builds and runs the complete toolbox
+verification for PRs touching image inputs, Dependabot or workflows. It uses
+`pull_request`, read-only repository permissions and no registry login/push.
+It reads the existing build cache but exports no PR cache or build-record
+artifact. New commits cancel the previous check for that PR. Documentation-only
+PRs do not run the image build. The check validates installed tools, not every
+Azure operation or application integration.
+
+Dependabot opens PRs; this configuration does not enable automatic merging.
+Review the diff and green check, then merge manually. Opening a PR only builds
+a local candidate on the runner. Merging an action update to the publishing
+workflow triggers the existing main-branch build and publish, in addition to
+the weekly scheduled refresh. A change only to Dependabot or the PR-validation
+workflow does not match the publishing workflow's path filter.
+
+This repository is public. Standard GitHub-hosted Ubuntu runner compute is
+free for public repositories; no paid scanner, larger runner or new artifact
+storage is introduced. Recheck billing if the repository becomes private.
+See [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+
+Optional GitHub setting: require the PR build-and-verify check before merging.
+Because this workflow has path filters, do not require it unconditionally for
+all PRs: documentation-only PRs would wait for a check that never starts. Remove the filters before requiring this check for every PR. Repository rules and auto-merge settings are not changed
+by these files.

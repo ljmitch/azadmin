@@ -20,7 +20,7 @@ build:          ## Build :latest (floats come from cache unless --build-arg-d)
 	podman build -t $(IMAGE):$(TAG) .
 
 build-fresh:    ## Build, but re-resolve all floating tools (cache-bust)
-	podman build --build-arg BUILD_DATE=$(BUILD_DATE) -t $(IMAGE):$(TAG) .
+	podman build --pull=always --build-arg BUILD_DATE=$(BUILD_DATE) -t $(IMAGE):$(TAG) .
 
 build-tag:      ## Build a date-stamped tag, then alias :latest to it
 	podman build -t $(IMAGE):$(DATED) .
@@ -57,6 +57,7 @@ volumes-wipe:   ## Wipe every credential volume (forces fresh login across the b
 
 pull-bases:     ## Refresh upstream base images this Dockerfile pulls from
 	podman pull ubuntu:24.04
+	podman pull mcr.microsoft.com/dotnet/sdk:10.0-noble
 	podman pull registry.access.redhat.com/ubi9/ubi:latest
 
 refresh:        ## Mass refresh :latest tags on all remote images (registry-mirrored)

@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 # ---------------------------------------------------------------------------
 # azure-admin-toolbox
-# Ubuntu 24.04 LTS (noble) + PowerShell 7 + Azure CLI + Az + Microsoft.Graph
+# Ubuntu + PowerShell 7 + Azure CLI + Az + Microsoft.Graph
+# + Terraform + tflint + checkov + kubectl + helm + azcopy + azd + .NET 10 + Functions
 #
 # Version philosophy:
 #   - Everything floats to latest BY DEFAULT, resolved at build time.
@@ -11,10 +12,11 @@
 
 # Copy only .NET from the maintained noble SDK image. Keep the final Ubuntu
 # base and PMC PowerShell install; the SDK image also bundles its own pwsh.
+ARG BASE_IMAGE=ubuntu:24.04
 ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0-noble
 FROM ${DOTNET_SDK_IMAGE} AS dotnet-sdk
 
-FROM ubuntu:24.04
+FROM ${BASE_IMAGE}
 
 # ---- Tool versions ----------------------------------------------------------
 # Pass "latest" (the default) to resolve at build time via GitHub releases,

@@ -39,6 +39,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  BASE_IMAGE: ${{ vars.BASE_IMAGE || 'ubuntu:24.04' }}
+  DOTNET_SDK_IMAGE: ${{ vars.DOTNET_SDK_IMAGE || 'mcr.microsoft.com/dotnet/sdk:10.0-noble' }}
   REGISTRY: ghcr.io
 
 jobs:
@@ -55,6 +57,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      - name: Source images in use
+        env:
+          CONFIGURED_BASE_IMAGE: ${{ vars.BASE_IMAGE }}
+          CONFIGURED_DOTNET_SDK_IMAGE: ${{ vars.DOTNET_SDK_IMAGE }}
+        run: |
+          printf 'Building from base image: %s\n' "$BASE_IMAGE"
+          printf '.NET SDK source image: %s\n' "$DOTNET_SDK_IMAGE"
+          printf 'Repository BASE_IMAGE: %s (blank = fallback)\n' "$CONFIGURED_BASE_IMAGE"
+          printf 'Repository DOTNET_SDK_IMAGE: %s (blank = fallback)\n' "$CONFIGURED_DOTNET_SDK_IMAGE"
+
       - name: Image name (GHCR requires lowercase)
         run: echo "IMAGE=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
 
@@ -64,7 +76,7 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.cache_bust }}" = "true" ]; then
             stamp="$(date -u +%Y%m%d%H%M%S)"
             echo "build_date=${stamp}" >> "$GITHUB_OUTPUT"
-            echo "Refreshing floated tools; the build pulls both Ubuntu and the .NET SDK stage."
+            echo "Refreshing floated tools; Buildx pulls both configured source images."
           else
             echo "build_date=unknown" >> "$GITHUB_OUTPUT"
           fi
@@ -83,7 +95,7 @@ jobs:
 
       - name: Image tags and labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
           tags: |
@@ -92,7 +104,7 @@ jobs:
             type=sha,prefix=sha-
 
       - name: Build (load locally, do not push yet)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           pull: true
@@ -102,6 +114,8 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
+            DOTNET_SDK_IMAGE=${{ env.DOTNET_SDK_IMAGE }}
             BUILD_DATE=${{ steps.bust.outputs.build_date }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

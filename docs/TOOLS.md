@@ -110,7 +110,7 @@ here so they stay below the main toolset.
 
 ## Functions tooling and image size
 
-The final image still starts from `ubuntu:24.04`. A build stage supplies the
+The final image defaults to `ubuntu:24.04` through `BASE_IMAGE`. A build stage supplies the
 maintained .NET 10 SDK, reference packs and shared runtimes. Only
 `/usr/share/dotnet` is copied, so the source SDK image's bundled PowerShell
 is not installed a second time; this toolbox keeps its existing PMC pwsh.
@@ -163,6 +163,7 @@ per-leaf pin ARG; bump everything by rebuilding with `BUILD_DATE`.
 
 | ARG | Default | Effect |
 |---|---|---|
+| `BASE_IMAGE` | `ubuntu:24.04` | final image base; GitHub repository variable or local build arg |
 | `DOTNET_SDK_IMAGE` | `mcr.microsoft.com/dotnet/sdk:10.0-noble` | source SDK image; pin a compatible noble .NET 10 tag/digest if required |
 | `YQ_VERSION` | `latest` | resolves from `api.github.com/repos/mikefarah/yq/releases/latest` at build; pin with explicit `vX.Y.Z` to freeze |
 | `HELM_VERSION` | `latest` | same pattern - `helm/helm` repo |

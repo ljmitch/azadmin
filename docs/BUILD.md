@@ -17,6 +17,26 @@ The rest of this page is for changing the image itself.
 podman build -t admin-toolbox:latest .
 ```
 
+## GitHub repository image variables
+
+The workflow reads both repository variables under Settings -> Secrets and
+variables -> Actions -> Variables and passes them as Docker build args:
+
+| Repository variable / build arg | Fallback when the repository variable is blank |
+|---|---|
+| `BASE_IMAGE` | `ubuntu:24.04` |
+| `DOTNET_SDK_IMAGE` | `mcr.microsoft.com/dotnet/sdk:10.0-noble` |
+
+The source-image log step prints the resolved values and whether repository
+values were supplied. Buildx `pull: true` refreshes both stages. Merely adding
+a GitHub variable does not configure Docker unless the workflow passes it;
+both are wired explicitly here.
+
+Local builds use the Dockerfile defaults unless the same build args are
+supplied locally. GitHub variables are not downloaded into a local build.
+The supported/tested pairing remains Ubuntu 24.04 with the noble .NET 10 SDK;
+changing the base requires reviewing SDK/native package/feed compatibility.
+
 ## Fresh-rebuild (picks up "latest" floated versions properly)
 
 Cached layers mean a plain rebuild won't re-resolve floating tools - yq, helm,
@@ -24,7 +44,7 @@ tflint, checkov, az CLI, Graph/Az modules etc. would serve you last-build's
 "latest". Two options:
 
 **Usual** - pull both source images and pass the cache-buster ARG. The final
-base stays `ubuntu:24.04`; a build stage supplies .NET from
+base defaults to `ubuntu:24.04`; a build stage supplies .NET from
 `mcr.microsoft.com/dotnet/sdk:10.0-noble`. `BUILD_DATE` invalidates the Ubuntu
 upgrade/tool layers, but cannot update the SDK bytes in a cached source image.
 Use `--pull=always` for Podman (`--pull` for Docker) as well.
@@ -115,7 +135,8 @@ All checks must say `VERIFY PASSED` before you tag the image.
 
 | Component | Mode | Control |
 |---|---|---|
-| .NET SDK source | rolling `10.0-noble` image, final OS stays Ubuntu 24.04 | refresh with `--pull=always`; `DOTNET_SDK_IMAGE` can select a compatible pinned tag/digest |
+| Final base | `BASE_IMAGE`, default Ubuntu 24.04 | GitHub repository variable or local `--build-arg BASE_IMAGE=...`; other bases need compatibility review |
+| .NET SDK source | rolling `10.0-noble` image by default | refresh with `--pull=always`; `DOTNET_SDK_IMAGE` can select a compatible pinned tag/digest |
 | Functions Core Tools | GA v4 from PMC noble apt | refresh install layer with `BUILD_DATE` or `--no-cache` |
 | Ubuntu base packages (`libc6`, `base-files`, ...) | `apt-get upgrade` on the first apt layer | cache-bust (`BUILD_DATE`) or `--no-cache`; a plain rebuild reuses the old upgrade |
 | yq | floats to GitHub latest (default) | `--build-arg YQ_VERSION=vX.Y.Z` to pin |

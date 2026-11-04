@@ -246,3 +246,42 @@ podman push <your-acr>.azurecr.io/admin-toolbox:latest
 Only do this if the image content is genuinely shareable - it contains no
 secrets, but your org's policy is the final word. For a public repo the
 correct target is GHCR (`ghcr.io/ljmitch/azadmin`), which CI already publishes.
+
+## Dependency updates and PR validation
+
+`.github/dependabot.yml` checks GitHub Actions every Monday at 09:30 UK time.
+Minor/patch updates are grouped; major updates get separate PRs for review.
+The limit is three open version-update PRs. Dependabot starts using this
+configuration after it reaches the default branch.
+
+This differs from the website configuration: there are no npm dependencies
+here. Docker update PRs are intentionally omitted. Ubuntu 24.04 and .NET 10
+noble are deliberate compatibility choices, their tags refresh on rebuild,
+and repository variables can override the Dockerfile defaults. Dependabot
+does not update those repository variables or the tools installed from
+apt, PowerShell Gallery and floating download URLs.
+
+`Validate toolbox PR / build-and-verify` builds and runs the complete toolbox
+verification for PRs touching image inputs, Dependabot or workflows. It uses
+`pull_request`, read-only repository permissions and no registry login/push.
+It reads the existing build cache but exports no PR cache or build-record
+artifact. New commits cancel the previous check for that PR. Documentation-only
+PRs do not run the image build. The check validates installed tools, not every
+Azure operation or application integration.
+
+Dependabot opens PRs; this configuration does not enable automatic merging.
+Review the diff and green check, then merge manually. Opening a PR only builds
+a local candidate on the runner. Merging an action update to the publishing
+workflow triggers the existing main-branch build and publish, in addition to
+the weekly scheduled refresh. A change only to Dependabot or the PR-validation
+workflow does not match the publishing workflow's path filter.
+
+This repository is public. Standard GitHub-hosted Ubuntu runner compute is
+free for public repositories; no paid scanner, larger runner or new artifact
+storage is introduced. Recheck billing if the repository becomes private.
+See [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+
+Optional GitHub setting: require the PR build-and-verify check before merging.
+Because this workflow has path filters, do not require it unconditionally for
+all PRs: documentation-only PRs would wait for a check that never starts. Remove the filters before requiring this check for every PR. Repository rules and auto-merge settings are not changed
+by these files.

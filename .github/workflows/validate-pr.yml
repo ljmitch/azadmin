@@ -1,0 +1,63 @@
+name: Validate toolbox PR
+
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - scripts/**
+      - config/powershell/**
+      - .dockerignore
+      - .github/dependabot.yml
+      - .github/workflows/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolbox-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  BASE_IMAGE: ${{ vars.BASE_IMAGE || 'ubuntu:24.04' }}
+  DOTNET_SDK_IMAGE: ${{ vars.DOTNET_SDK_IMAGE || 'mcr.microsoft.com/dotnet/sdk:10.0-noble' }}
+  # Keep validation free of build-record artifacts and registry credentials.
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          version: latest
+
+      - name: Build candidate image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          pull: true
+          load: true
+          push: false
+          provenance: false
+          tags: admin-toolbox:pr
+          build-args: |
+            BASE_IMAGE=${{ env.BASE_IMAGE }}
+            DOTNET_SDK_IMAGE=${{ env.DOTNET_SDK_IMAGE }}
+            BUILD_DATE=unknown
+          # Read the normal build cache without exporting a cache for each PR.
+          cache-from: type=gha
+
+      - name: Verify toolbox
+        run: |
+          docker run --rm \
+            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/work,readonly" \
+            --workdir /work \
+            admin-toolbox:pr \
+            pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1

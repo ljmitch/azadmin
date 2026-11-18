@@ -71,7 +71,7 @@ jq -n --arg image "$SCAN_TEST_IMAGE_ID" \
 jq -n --arg image "$SCAN_TEST_IMAGE_ID" \
   '{SchemaVersion:2,ArtifactType:"container_image",Metadata:{ImageID:$image},Results:null}' \
   > "$fixture/base-secret.json"
-printf '{"SchemaVersion":2,"ArtifactType":"filesystem","Results":null}\n' > "$fixture/base-source.json"
+printf '{"SchemaVersion":2,"ArtifactType":"repository","ArtifactName":".","Results":null}\n' > "$fixture/base-source.json"
 
 passed=0
 image_case() {
@@ -124,17 +124,19 @@ for scenario in high-unfixed critical secret-match eol no-inventory wrong-image 
   image_case "$scenario" fail
 done
 
-for scenario in source-clean source-secret source-invalid source-error; do
+for scenario in source-clean source-array source-secret source-invalid source-wrong-type source-error; do
   export SCAN_TEST_SCENARIO="$scenario"
   cp "$fixture/base-source.json" "$fixture/source.json"
   case "$scenario" in
+    source-array) jq '.Results=[]' "$fixture/base-source.json" > "$fixture/source.json" ;;
     source-secret)
       jq '.Results=[{Secrets:[{RuleID:"fixture-source",Match:"AZADMIN_TEST_MATCH_PRIVATE"}]}]' "$fixture/base-source.json" > "$fixture/source.json" ;;
     source-invalid) printf '{}\n' > "$fixture/source.json" ;;
+    source-wrong-type) jq '.ArtifactType="container_image"' "$fixture/base-source.json" > "$fixture/source.json" ;;
   esac
   actual=0
   if (cd "$fixture/work" && bash "$repo_root/.github/scripts/scan-source.sh") > "$fixture/log-$scenario" 2>&1; then actual=0; else actual=$?; fi
-  if [[ "$scenario" == source-clean ]]; then
+  if [[ "$scenario" == source-clean || "$scenario" == source-array ]]; then
     [[ "$actual" == 0 ]] || { printf 'FAIL: clean source scan did not pass\n'; exit 1; }
   else
     [[ "$actual" != 0 ]] || { printf 'FAIL: %s passed unexpectedly\n' "$scenario"; exit 1; }

@@ -316,3 +316,14 @@ written to retained CI reports. Source scanning found no credential matches.
 The scan policy is recorded in `scripts/scan-image.sh`. A failed gate leaves
 the existing released image untouched; it does not automatically grant a waiver
 or replace the running toolbox. Rebuild and rescan after an upstream fix.
+
+## 23. A clean source scan failed report validation
+
+The first hosted scan stopped before building: Trivy 0.76.2's `fs` subcommand
+reported `ArtifactType: repository`, but the wrapper expected `filesystem`.
+The scan had zero secret matches; the report-contract check was wrong. The
+wrapper now checks the observed repository type and accepts either null or
+empty-array Results for a clean scan. Regression fixtures use that real shape
+and still reject malformed reports and the wrong artifact type. Check the
+actual scanner report when updating its contract, rather than inferring JSON
+types from the command name.

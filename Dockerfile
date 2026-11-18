@@ -2,21 +2,20 @@
 # ---------------------------------------------------------------------------
 # azure-admin-toolbox
 # Ubuntu + PowerShell 7 + Azure CLI + Az + Microsoft.Graph
-# + Terraform + tflint + checkov + kubectl + helm + azcopy + azd + .NET 10 + Functions
+# + Terraform + tflint + checkov + kubectl + helm + azcopy + azd
+# Optional profiles add .NET 10, then Functions Core Tools v4.
 #
 # Version philosophy:
 #   - Everything floats to latest BY DEFAULT, resolved at build time.
-#   - Anything can be pinned by passing an explicit --build-arg.
+#   - Base/SDK images and yq/Helm expose optional version build args.
 #   - Refresh floating layers deliberately with --build-arg BUILD_DATE=<ts>.
 # ---------------------------------------------------------------------------
 
-# Copy only .NET from the maintained noble SDK image. Keep the final Ubuntu
-# base and PMC PowerShell install; the SDK image also bundles its own pwsh.
 ARG BASE_IMAGE=ubuntu:24.04
 ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0-noble
-FROM ${DOTNET_SDK_IMAGE} AS dotnet-sdk
+ARG TOOLBOX_PROFILE=core
 
-FROM ${BASE_IMAGE}
+FROM ${BASE_IMAGE} AS core
 
 # ---- Tool versions ----------------------------------------------------------
 # Pass "latest" (the default) to resolve at build time via GitHub releases,
@@ -29,11 +28,20 @@ ARG HELM_VERSION=latest
 ARG BUILD_DATE=unknown
 
 LABEL org.opencontainers.image.title="azure-admin-toolbox" \
-      org.opencontainers.image.description="Reusable Azure/M365 admin toolbox (pwsh7, az, Az, Graph, TF, AKS, .NET 10, Functions)" \
+      org.opencontainers.image.description="Reusable Azure/M365 admin toolbox with optional development profiles" \
       org.opencontainers.image.source="https://github.com/ljmitch/azadmin" \
       org.opencontainers.image.licenses="MIT"
 
-# ---- Base packages (all apt tooling landed UP FRONT - nothing later) --------
+ENV TOOLBOX_PROFILE=core \
+    POWERSHELL_TELEMETRY_OPTOUT=1 \
+    POWERSHELL_UPDATECHECK=Off \
+    AZURE_CORE_COLLECT_TELEMETRY=false
+
+# Release downloads below are linux-amd64; fail before installing an incompatible set.
+RUN test "$(dpkg --print-architecture)" = amd64 \
+ || { printf 'This toolbox currently supports linux/amd64 only.\n' >&2; exit 1; }
+
+# ---- Base packages ---------------------------------------------------------
 # apt-get install does not upgrade packages already in ubuntu:24.04 (libc6,
 # base-files, ...). upgrade first so a cache-bust / --no-cache build takes
 # noble-updates + noble-security. --force-confold keeps existing conffiles.
@@ -47,8 +55,7 @@ RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       wget curl apt-transport-https ca-certificates gnupg lsb-release \
       git unzip zip less jq rsync \
-      python3 python3-pip \
-      libicu74 libssl3t64 libstdc++6 libatomic1 tzdata \
+      python3 python3-venv \
       procps \
       dnsutils iputils-ping netcat-openbsd traceroute \
       openssh-client \
@@ -57,40 +64,31 @@ RUN apt-get update \
       socat openssl nmap ipcalc whois \
  && rm -rf /var/lib/apt/lists/*
 
-# ---- .NET 10 SDK via Microsoft's Ubuntu noble image ------------------------
-# /usr/share/dotnet contains the SDK, reference packs and shared runtimes.
-# Base refresh requires pulling the SDK stage too; BUILD_DATE alone cannot do it.
-COPY --from=dotnet-sdk /usr/share/dotnet /usr/share/dotnet
-ENV DOTNET_ROOT=/usr/share/dotnet \
-    DOTNET_RUNNING_IN_CONTAINER=true \
-    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
-    DOTNET_NOLOGO=true \
-    DOTNET_USE_POLLING_FILE_WATCHER=true
-RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
-
 # ---- PostgreSQL client via PGDG (latest stable, not Ubuntu's aged copy) -----
 # Ubuntu noble ships postgresql-client-16; PGDG bootstrap script gives 18 and
 # auto-tracks. Uses PGDG's official apt.postgresql.org.sh bootstrap.
+# postgresql-common creates a server snakeoil key; client tooling must not ship it.
 RUN apt-get update && apt-get install -y --no-install-recommends postgresql-common \
  && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
  && apt-get update \
  && apt-get install -y postgresql-client \
+ && rm -f /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem \
  && rm -rf /var/lib/apt/lists/*
 
-# ---- PowerShell 7 + Core Tools v4 via packages.microsoft.com (PMC) -----------
+# ---- PowerShell 7 via packages.microsoft.com (PMC) --------------------------
 # PMC lag scar: new pwsh announcements can lag the feed by days. See
 # docs/TROUBLESHOOTING.md before assuming breakage is ours.
 RUN . /etc/os-release \
  && TERM=dumb wget -q https://packages.microsoft.com/config/ubuntu/$VERSION_ID/packages-microsoft-prod.deb \
  && TERM=dumb dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb \
  && apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends powershell azure-functions-core-tools-4 \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends powershell \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- Azure CLI - separate Microsoft feed (docs-confirmed on noble) -----------
 # Ref: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-linux
 RUN mkdir -p /etc/apt/keyrings \
- && curl -sLS https://packages.microsoft.com/keys/microsoft.asc \
+ && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
       | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg \
  && chmod go+r /etc/apt/keyrings/microsoft.gpg \
  && AZ_DIST=$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") \
@@ -120,7 +118,7 @@ RUN az bicep install
 # ---- yq (floats to latest via GitHub API; pin with --build-arg) --------------
 RUN set -eux; \
     if [ "${YQ_VERSION}" = "latest" ]; then \
-      RESOLVED=$(curl -s https://api.github.com/repos/mikefarah/yq/releases/latest | jq -r '.tag_name'); \
+      RESOLVED=$(curl -fsSL https://api.github.com/repos/mikefarah/yq/releases/latest | jq -er '.tag_name | select(startswith("v"))'); \
     else \
       RESOLVED="${YQ_VERSION}"; \
     fi; \
@@ -140,15 +138,18 @@ RUN wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor \
  && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y terraform \
  && rm -rf /var/lib/apt/lists/* \
  && cd /tmp \
- && curl -sSfLO https://github.com/terraform-linters/tflint/releases/latest/download/tflint_linux_amd64.zip \
- && curl -sSfLO https://github.com/terraform-linters/tflint/releases/latest/download/checksums.txt \
- && sha256sum --ignore-missing -c checksums.txt \
+ && TFLINT_RELEASE=$(curl -fsSL https://api.github.com/repos/terraform-linters/tflint/releases/latest | jq -er '.tag_name | select(startswith("v"))') \
+ && curl -fsSLO "https://github.com/terraform-linters/tflint/releases/download/${TFLINT_RELEASE}/tflint_linux_amd64.zip" \
+ && curl -fsSLO "https://github.com/terraform-linters/tflint/releases/download/${TFLINT_RELEASE}/checksums.txt" \
+ && grep -E '^[[:xdigit:]]{64} [ *]tflint_linux_amd64.zip$' checksums.txt > tflint-checksum.txt \
+ && sha256sum -c tflint-checksum.txt \
  && unzip -o tflint_linux_amd64.zip -d /usr/local/bin \
- && rm tflint_linux_amd64.zip checksums.txt \
- && pip3 install --break-system-packages --no-cache-dir checkov
+ && rm tflint_linux_amd64.zip checksums.txt tflint-checksum.txt \
+ && python3 -m venv /opt/checkov \
+ && /opt/checkov/bin/python -m pip install --no-cache-dir checkov \
+ && ln -s /opt/checkov/bin/checkov /usr/local/bin/checkov
 
-# PEP-668 note: noble marks pip as externally-managed; --break-system-packages
-# is acceptable in a single-purpose container image.
+# PEP-668: keep Checkov's dependencies separate from the distro and Azure CLI Python.
 
 # ---- Kubernetes (kubectl + kubelogin via az) ----------------------------------
 RUN az aks install-cli
@@ -156,22 +157,31 @@ RUN az aks install-cli
 # ---- Helm (floats to latest via GitHub API; pin with --build-arg) --------------
 RUN set -eux; \
     if [ "${HELM_VERSION}" = "latest" ]; then \
-      RESOLVED=$(curl -s https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name'); \
+      RESOLVED=$(curl -fsSL https://api.github.com/repos/helm/helm/releases/latest | jq -er '.tag_name | select(startswith("v"))'); \
     else \
       RESOLVED="${HELM_VERSION}"; \
     fi; \
     echo "Installing helm ${RESOLVED}"; \
-    curl -fsSL "https://get.helm.sh/helm-${RESOLVED}-linux-amd64.tar.gz" \
-      | tar xz --strip-components=1 -C /usr/local/bin linux-amd64/helm; \
+    DOWNLOAD_DIR=$(mktemp -d); \
+    cd "$DOWNLOAD_DIR"; \
+    curl -fsSLO "https://get.helm.sh/helm-${RESOLVED}-linux-amd64.tar.gz"; \
+    curl -fsSLO "https://get.helm.sh/helm-${RESOLVED}-linux-amd64.tar.gz.sha256sum"; \
+    sha256sum -c "helm-${RESOLVED}-linux-amd64.tar.gz.sha256sum"; \
+    tar xzf "helm-${RESOLVED}-linux-amd64.tar.gz" --strip-components=1 -C /usr/local/bin linux-amd64/helm; \
+    cd /; \
+    rm -rf "$DOWNLOAD_DIR"; \
     helm version --short
 
 # ---- Azure Storage copy tool (azcopy - binary-distributed) ---------------------
-RUN curl -sL https://aka.ms/downloadazcopy-v10-linux \
-      | tar xz --strip-components=1 --wildcards -C /usr/local/bin '*/azcopy' \
+RUN curl -fsSL https://aka.ms/downloadazcopy-v10-linux -o /tmp/azcopy.tar.gz \
+ && tar xzf /tmp/azcopy.tar.gz --strip-components=1 --wildcards -C /usr/local/bin '*/azcopy' \
+ && rm /tmp/azcopy.tar.gz \
  && azcopy --version
 
 # ---- Azure Developer CLI (azd) --------------------------------------------------
-RUN curl -fsSL https://aka.ms/install-azd.sh | bash
+RUN curl -fsSL https://aka.ms/install-azd.sh -o /tmp/install-azd.sh \
+ && bash /tmp/install-azd.sh \
+ && rm /tmp/install-azd.sh
 
 # ---- PowerShell modules (Az + curated Graph leaves + Exchange) ----------------
 # Gallery latest at build time. Real .ps1 (not a backslash-continued -Command
@@ -187,3 +197,30 @@ COPY config/powershell/Microsoft.PowerShell_profile.ps1 \
 
 WORKDIR /work
 CMD ["pwsh"]
+
+# Copy only SDK files; the source image's bundled PowerShell is not needed.
+FROM ${DOTNET_SDK_IMAGE} AS dotnet-sdk
+
+FROM core AS dotnet
+ENV TOOLBOX_PROFILE=dotnet \
+    DOTNET_ROOT=/usr/share/dotnet \
+    DOTNET_RUNNING_IN_CONTAINER=true \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=true \
+    DOTNET_USE_POLLING_FILE_WATCHER=true
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      libicu74 libssl3t64 libstdc++6 libatomic1 tzdata \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=dotnet-sdk /usr/share/dotnet /usr/share/dotnet
+RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
+
+# PMC is already configured by core. Keep GA Core Tools out of admin-only builds.
+FROM dotnet AS functions
+ENV TOOLBOX_PROFILE=functions
+RUN apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends azure-functions-core-tools-4 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Select a prebuilt stage, not runtime package installation into a running shell.
+FROM ${TOOLBOX_PROFILE} AS toolbox

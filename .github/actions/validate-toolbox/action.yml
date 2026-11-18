@@ -1,0 +1,141 @@
+name: Build, verify and scan toolbox profiles
+description: Validate the loaded core, dotnet and functions images before publication.
+inputs:
+  base-image:
+    description: Reviewed Ubuntu base reference
+    required: true
+  dotnet-sdk-image:
+    description: Reviewed .NET SDK source reference
+    required: true
+  build-date:
+    description: Cache-bust stamp for floating tools
+    default: unknown
+  export-cache:
+    description: Only trusted publication runs may update the shared build cache
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Prepare evidence and scanner
+      shell: bash
+      run: |
+        mkdir -p reports/core reports/dotnet reports/functions
+        printf 'TRIVY_CACHE_DIR=%s/azadmin-trivy-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+        bash .github/scripts/test-scan-policy.sh
+        bash .github/scripts/install-trivy.sh
+    - name: Scan source for secrets
+      shell: bash
+      run: bash .github/scripts/scan-source.sh
+    - name: Build core
+      id: core_build
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+      with:
+        context: .
+        platforms: linux/amd64
+        pull: true
+        load: true
+        push: false
+        provenance: false
+        tags: admin-toolbox:core
+        labels: org.opencontainers.image.revision=${{ github.sha }}
+        build-args: |
+          BASE_IMAGE=${{ inputs.base-image }}
+          DOTNET_SDK_IMAGE=${{ inputs.dotnet-sdk-image }}
+          BUILD_DATE=${{ inputs.build-date }}
+          TOOLBOX_PROFILE=core
+        cache-from: type=gha,scope=toolbox-profiles
+    - name: Verify and scan core
+      id: core_gate
+      continue-on-error: true
+      shell: bash
+      env:
+        BUILD_METADATA: ${{ steps.core_build.outputs.metadata }}
+      run: |
+        printf '%s\n' "$BUILD_METADATA" > reports/core/build-metadata.json
+        status=0
+        if ! bash scripts/test-image.sh admin-toolbox:core core reports/core; then status=1; fi
+        if ! bash scripts/scan-image.sh admin-toolbox:core reports/core; then status=1; fi
+        exit "$status"
+    - name: Build dotnet
+      id: dotnet_build
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+      with:
+        context: .
+        platforms: linux/amd64
+        pull: true
+        load: true
+        push: false
+        provenance: false
+        tags: admin-toolbox:dotnet
+        labels: org.opencontainers.image.revision=${{ github.sha }}
+        build-args: |
+          BASE_IMAGE=${{ inputs.base-image }}
+          DOTNET_SDK_IMAGE=${{ inputs.dotnet-sdk-image }}
+          BUILD_DATE=${{ inputs.build-date }}
+          TOOLBOX_PROFILE=dotnet
+        cache-from: type=gha,scope=toolbox-profiles
+    - name: Verify and scan dotnet
+      id: dotnet_gate
+      continue-on-error: true
+      shell: bash
+      env:
+        BUILD_METADATA: ${{ steps.dotnet_build.outputs.metadata }}
+      run: |
+        printf '%s\n' "$BUILD_METADATA" > reports/dotnet/build-metadata.json
+        status=0
+        if ! bash scripts/test-image.sh admin-toolbox:dotnet dotnet reports/dotnet; then status=1; fi
+        if ! bash scripts/scan-image.sh admin-toolbox:dotnet reports/dotnet; then status=1; fi
+        exit "$status"
+    - name: Build functions
+      id: functions_build
+      uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+      with:
+        context: .
+        platforms: linux/amd64
+        pull: true
+        load: true
+        push: false
+        provenance: false
+        tags: admin-toolbox:functions
+        labels: org.opencontainers.image.revision=${{ github.sha }}
+        build-args: |
+          BASE_IMAGE=${{ inputs.base-image }}
+          DOTNET_SDK_IMAGE=${{ inputs.dotnet-sdk-image }}
+          BUILD_DATE=${{ inputs.build-date }}
+          TOOLBOX_PROFILE=functions
+        cache-from: type=gha,scope=toolbox-profiles
+        cache-to: ${{ inputs.export-cache == 'true' && 'type=gha,scope=toolbox-profiles,mode=max' || '' }}
+    - name: Verify and scan functions
+      id: functions_gate
+      continue-on-error: true
+      shell: bash
+      env:
+        BUILD_METADATA: ${{ steps.functions_build.outputs.metadata }}
+      run: |
+        printf '%s\n' "$BUILD_METADATA" > reports/functions/build-metadata.json
+        status=0
+        if ! bash scripts/test-image.sh admin-toolbox:functions functions reports/functions; then status=1; fi
+        if ! bash scripts/scan-image.sh admin-toolbox:functions reports/functions; then status=1; fi
+        exit "$status"
+    - name: Require every verification and scan to pass
+      shell: bash
+      env:
+        CORE_RESULT: ${{ steps.core_gate.outcome }}
+        DOTNET_RESULT: ${{ steps.dotnet_gate.outcome }}
+        FUNCTIONS_RESULT: ${{ steps.functions_gate.outcome }}
+      run: |
+        printf 'Core: %s; dotnet: %s; functions: %s\n' "$CORE_RESULT" "$DOTNET_RESULT" "$FUNCTIONS_RESULT"
+        {
+          printf '## Toolbox validation\n\n| Profile | Verify and scan | HIGH/CRITICAL | Secrets |\n|---|---|---:|---:|\n'
+          for profile in core dotnet functions; do
+            case "$profile" in core) result="$CORE_RESULT" ;; dotnet) result="$DOTNET_RESULT" ;; functions) result="$FUNCTIONS_RESULT" ;; esac
+            if [ -f "reports/${profile}/scan-summary.json" ]; then
+              jq -r --arg profile "$profile" --arg result "$result" \
+                '"| " + $profile + " | " + $result + " | " + (.blocking_vulnerabilities|tostring) + " | " + (.secret_findings|tostring) + " |"' \
+                "reports/${profile}/scan-summary.json"
+            else
+              printf '| %s | %s | unavailable | unavailable |\n' "$profile" "$result"
+            fi
+          done
+        } >> "$GITHUB_STEP_SUMMARY"
+        [[ "$CORE_RESULT" = success && "$DOTNET_RESULT" = success && "$FUNCTIONS_RESULT" = success ]]

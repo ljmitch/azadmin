@@ -10,6 +10,10 @@ image: Ubuntu 24.04 (noble), PowerShell 7, Azure CLI, Az + curated
 Microsoft.Graph leaves, plus IaC and Kubernetes CLIs. It is a lab/toolbox
 image, not a product.
 
+`TOOLBOX_PROFILE=core` is the default. Optional `dotnet` and `functions`
+profiles add the .NET SDK and then Core Tools at build time. Keep the verifier,
+profile helpers, inventory and CI gates aligned when changing these layers.
+
 Do not add tenant names, subscription IDs, ACR hostnames, or other
 environment-specific facts. Keep examples generic (`<org>`, `<acr>`).
 
@@ -78,8 +82,16 @@ podman run --rm -v ${PWD}:/work -w /work admin-toolbox:latest pwsh -NoProfile -F
 `Verify-Toolbox.ps1` is **not** baked into the image. Bind-mount the repo.
 
 CI uses Docker Buildx on GitHub-hosted `ubuntu-latest` (not Podman) and must
-pass verify before pushing to GHCR. Do not add a `pull_request` push-to-GHCR
+pass verification, vulnerability and secret scans before pushing to GHCR.
+Keep HIGH/CRITICAL findings (including unfixed ones) blocking unless a specific
+reviewed exception policy is separately authorised. Scanner errors are failures.
+Do not upload raw secret matches or image-config environment/history values.
+Do not add a `pull_request` push-to-GHCR
 job. Local workflow stays Podman; see [docs/BUILD.md](docs/BUILD.md).
+
+Keep documentation in logical reading order; reordering is fine when it helps.
+If files are renamed, moved or removed, check and update incoming links,
+navigation, workflow references and literal filenames in the same change.
 
 ## Scope
 

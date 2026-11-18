@@ -1,140 +1,131 @@
 # Azure Admin Toolbox
 
-Reusable Azure / Microsoft 365 admin toolbox image (pwsh 7, az, Graph, IaC,
-K8s, .NET 10 and Functions Core Tools v4). Day to day: pull `:latest` from GHCR and run it against whatever folder
-you are in. CI rebuilds weekly.
+A personal Azure / Microsoft 365 administration workstation in a container:
+PowerShell 7, Azure CLI, Az, curated Graph modules, IaC, Kubernetes and
+network troubleshooting tools. Pull a tested image instead of maintaining
+all those installations on the Windows host.
 
-## Run (copy / paste)
+This is useful as a local Cloud Shell-like toolbox. Microsoft's
+[Azure Cloud Shell](https://learn.microsoft.com/en-us/azure/cloud-shell/overview)
+also supplies managed hosting and automatic authentication. This repository
+supplies the container; you manage its engine, updates, credentials, networking
+and mounted files. A container is not a separate tenant or a complete sandbox
+for untrusted scripts.
 
-From any repo root, host PowerShell + Podman:
+## Choose the tools you need
+
+| Profile | Includes | Choose it for |
+|---|---|---|
+| `core` (default) | Azure/M365, IaC, Kubernetes, database and network tools | Normal administration; no standalone .NET SDK or Functions Core Tools |
+| `dotnet` | Core plus the .NET 10 SDK | Restore, build, test and publish .NET projects without a host SDK |
+| `functions` | Dotnet plus Azure Functions Core Tools v4 | Local .NET Functions development; run Azurite separately if needed |
+
+The SDK was useful for building Functions projects, but it need not be in every
+admin shell. PowerShell already carries the runtime it needs; removing the
+standalone SDK does not remove PowerShell.
+
+Profiles are **build-time layers**. Pull a different profile image or rebuild
+with `TOOLBOX_PROFILE`; `podman run -e TOOLBOX_PROFILE=dotnet ...` cannot add the
+SDK to a core image or remove bytes from an existing functions image.
+
+After this revision is merged and a green publishing run completes, `:latest`
+and `:core` select core; `:dotnet` and `:functions` select the optional profiles.
+Existing local images do not change until pulled/rebuilt. Select `:functions`
+to retain the previous SDK/Core Tools bundle.
+
+## Pull and run
+
+From host PowerShell + Podman, choose one image:
 
 ```powershell
-podman pull ghcr.io/ljmitch/azadmin:latest
+$image = 'ghcr.io/ljmitch/azadmin:core'
+# Alternatives: ghcr.io/ljmitch/azadmin:dotnet or :functions
+podman pull $image
+if ($LASTEXITCODE -ne 0) { throw 'Image pull failed' }
 
+# Stateless credentials: log in again for this session.
+podman run -it --rm -v "${PWD}:/work" -w /work $image
+```
+
+For repeated work, credential caches can persist in named volumes:
+
+```powershell
 podman run -it --rm `
-  -v ${PWD}:/work -w /work `
+  -v "${PWD}:/work" -w /work `
   -v admin_az:/root/.azure `
   -v admin_azps:/root/.Azure `
-  -v admin_graph:/root/.local/share/IdentityCache `
   -v admin_kube:/root/.kube `
-  ghcr.io/ljmitch/azadmin:latest
+  $image
 ```
 
-One line (same thing):
+Those volumes contain reusable credentials. Keep separate caches for different
+trust contexts, mount only the workspace you need and prefer a read-only
+workspace for inspection. Do not mount the host container socket or pass
+`--privileged` for ordinary administration. Root inside this toolbox and
+write access to a mounted folder can modify that folder's files.
+
+Device-code login, cache cleanup, Functions ports and one-shot commands:
+[docs/USAGE.md](docs/USAGE.md). Swap `podman` for `docker` if that is your engine.
+The supported image platform is Linux/amd64.
+
+## Build a selected profile locally
 
 ```powershell
-podman run -it --rm -v ${PWD}:/work -w /work -v admin_az:/root/.azure -v admin_azps:/root/.Azure -v admin_graph:/root/.local/share/IdentityCache -v admin_kube:/root/.kube ghcr.io/ljmitch/azadmin:latest
+$profile = 'dotnet' # core, dotnet, functions
+$tag = "admin-toolbox:$profile"
+podman build --pull=always `
+  --build-arg "TOOLBOX_PROFILE=$profile" `
+  --build-arg "BUILD_DATE=$(Get-Date -Format o)" `
+  -t $tag .
+if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
+
+# The verifier lives in the repository, so mount the repo read-only.
+podman run --rm -v "${PWD}:/work:ro" -w /work $tag `
+  pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1 -ExpectedProfile $profile
+if ($LASTEXITCODE -ne 0) { throw 'Toolbox verification failed' }
 ```
 
-No credential cache (fresh login every time):
+A rebuild plus `Verify-Toolbox.ps1` is required after image/verifier changes.
+The checks prove selected tools execute and modules load; an intended Functions
+project still needs its own build, trigger/dependency and application tests.
+Full build, scan and release process: [docs/BUILD.md](docs/BUILD.md).
 
-```powershell
-podman run -it --rm -v ${PWD}:/work -w /work ghcr.io/ljmitch/azadmin:latest
-```
+## Security and updates
 
-Pin a day's CI build instead of floating `latest`: `ghcr.io/ljmitch/azadmin:2026-09-16` (YYYY-MM-DD). Swap `podman` for `docker` if that is your engine.
+The [18 November profile review](docs/BUILD.md#validated-profile-candidates-18-november-2026)
+passed runtime smoke checks but found release-blocking upstream dependencies
+and bundled secret samples. The new gates remain blocking; these profiles have
+not been published by this review.
 
-Volumes, device-code login, one-shots and mounted Functions projects: [docs/USAGE.md](docs/USAGE.md).
+CI builds each profile, verifies the loaded artifact and scans that same image
+before it can be published. Trivy vulnerability and secret checks fail the
+release on their configured policy or scanner errors. JSON reports and an SBOM
+are retained as build evidence; a passing scan is time-bound, not proof that an
+image has no vulnerabilities. The scanner runs outside the toolbox.
 
-## What's in it
+Tools intentionally float at **build time** through package feeds and upstream
+releases. Weekly builds refresh them; this does not update a running container
+or the image already stored on your laptop. Pull an approved replacement and
+start a new container. Record a digest for an exact rollback reference: readable
+date/SHA tags alone are not registry-enforced immutability.
 
-| Layer | Contents |
-|---|---|
-| Base | Ubuntu 24.04 LTS (noble); .NET SDK copied from Microsoft's maintained `10.0-noble` image |
-| Shells | PowerShell 7.x (pwsh), bash |
-| Functions development | .NET 10 SDK + Core Tools v4; Azurite stays in a separate container |
-| Azure | az CLI (+ Bicep), Az PowerShell, azd, gh CLI |
-| Azure extensions | `azure-devops`, `aks-preview`, `ssh` |
-| M365 / Graph | Curated Microsoft.Graph leaf set (10 modules, gallery latest at build), ExchangeOnlineManagement |
-| Kubernetes | kubectl + kubelogin (via `az aks install-cli`), helm (resolved from GitHub releases) |
-| IaC | Terraform (HashiCorp apt), tflint (SHA-verified latest), checkov |
-| Storage | azcopy |
-| Web/data | curl, wget, jq, yq (floats by default), git, psql client (latest via PGDG, not Ubuntu's stale copy) |
-| Network | dnsutils, iputils-ping, netcat-openbsd, traceroute, openssh-client |
-| Network extras | iproute2, mtr, tcpdump, iperf3, socat, openssl, nmap, tcptraceroute, fping, tracepath, ipcalc, hping3, whois |
+Only yq, Helm and source-image selection expose version build arguments today.
+Other tools require a reviewed install-layer change to pin. Graph leaves remain
+one coordinated Gallery install. See the [inventory](docs/TOOLS.md) and
+[build policy](docs/BUILD.md) rather than assuming every tool has a version ARG.
 
-## Version philosophy
-
-- Everything floats to **latest by default**, resolved at **build time**
-  via GitHub releases (yq, helm) or distribution feeds (apt, PSGallery,
-  MS PMC).
-- Pin anything explicitly with `--build-arg`, e.g.:
-  `podman build -t admin-toolbox:latest --build-arg YQ_VERSION=v4.48.2 .`
-- Refresh both source images and re-resolve floaters:
-  `podman build --pull=always --build-arg BUILD_DATE=$(Get-Date -Format yyyyMMddHHmm) -t admin-toolbox:latest .`
-  .NET stays on the 10.0/noble channel; `BUILD_DATE` alone does not refresh
-  that upstream SDK image. Docker's equivalent flag is `--pull`.
-- Graph leaves install together in one `Install-Module` (no per-leaf version).
-  Mixing versions across leaves recreates the TypeLoadException scar
-  (see docs/TROUBLESHOOTING.md).
-
-## Build locally
-
-When you are changing the Dockerfile, not when you just want a shell.
-Full runbook: [docs/BUILD.md](docs/BUILD.md).
-
-```powershell
-# Build (floats resolve at build time)
-podman build -t admin-toolbox:latest .
-
-# Pin examples (yq / helm only; modules float to gallery latest)
-podman build -t admin-toolbox:latest --build-arg YQ_VERSION=v4.48.2 .
-
-# Smoke test - MUST bind-mount this repo so the script is visible
-podman run --rm `
-  -v ${PWD}:/work -w /work `
-  admin-toolbox:latest `
-  pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
-
-# Run the local tag the same way as GHCR (swap the image name)
-podman run -it --rm `
-  -v ${PWD}:/work -w /work `
-  -v admin_az:/root/.azure `
-  -v admin_azps:/root/.Azure `
-  -v admin_graph:/root/.local/share/IdentityCache `
-  -v admin_kube:/root/.kube `
-  admin-toolbox:latest
-```
-
-## Repo map
+## Repository map
 
 | Path | Purpose |
 |---|---|
-| `Dockerfile` | Entire image definition. Tools float by default; pin via `--build-arg`. |
-| `scripts/Install-PsModules.ps1` | Build-time Az + Graph + ExchangeOnlineManagement install (gallery latest) |
-| `scripts/Verify-Toolbox.ps1` | Smoke test - proves every binary + module loads and reports versions |
-| `AGENTS.md` | Notes for coding agents - pointers into `docs/`, not a second runbook |
-| `docs/BUILD.md` | Build, tag, version-bump runbook. Includes PMC-lag fallback |
-| `docs/USAGE.md` | Login persistence options (full/stateless/partial), token cache hygiene, passkey auth, workflows |
-| `docs/TOOLS.md` | Inventory of every tool + why it's here |
-| `docs/TROUBLESHOOTING.md` | Known failures (scars) that shaped the image |
-| `.github/workflows/build-push.yml` | CI: Docker build, verify, push to GHCR |
-| `config/powershell/…` | Optional pwsh profile baked into the image |
-
-## Updating tools
-
-1. Edit the relevant `ARG` at the top of the `Dockerfile` (default is
-   `latest`; set a pinned value to force a specific version)
-2. `podman build -t admin-toolbox:latest --build-arg BUILD_DATE=$(Get-Date -Format yyyyMMddHHmm) .`
-   (the BUILD_DATE busts cache through the floating layers so they
-   actually re-resolve)
-3. Tag with a date (`admin-toolbox:2026-09-14`) so rollback is `docker`-trivial
-4. Run `Verify-Toolbox.ps1` before pinning the tag
-
-See `docs/BUILD.md` for the full runbook and `docs/USAGE.md` for the login
-persistence matrix (full / stateless / partial). Day to day, prefer
-`podman pull ghcr.io/ljmitch/azadmin:latest` over a local rebuild.
-
-## Notes
-
-- **Ubuntu 24.04 noble base**: PowerShell/apt/tflint/checkov shortcuts.
-  Base-version-agnostic repo URLs mean future base bumps won't need Dockerfile
-  edits - the codename-resolution idiom (`grep -oP '(?<=UBUNTU_CODENAME=).*'
-  /etc/os-release`) handles whichever Ubuntu we land on.
-- **psql from PGDG, not Ubuntu**: Ubuntu noble ships postgresql-client-16;
-  the toolbox uses the PGDG bootstrap (`/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh`)
-  so we get the current upstream (18.x at time of writing). Azure Database
-  for PostgreSQL 17 targets work properly from inside.
-- **Image-layer caching discipline**: cheap/high-churn layers come early;
-  expensive downloads come late. Rearranging is fine as long as the
-  `BUILD_DATE` cache-buster sits *above* the expensive stuff it needs to re-run.
+| [Dockerfile](Dockerfile) | Shared core and optional dotnet/functions stages |
+| [scripts/Install-PsModules.ps1](scripts/Install-PsModules.ps1) | Coordinated Az, Graph and Exchange install |
+| [scripts/Verify-Toolbox.ps1](scripts/Verify-Toolbox.ps1) | Selected-profile executable/module checks |
+| [docs/BUILD.md](docs/BUILD.md) | Builds, scan gates, cache policy and publication |
+| [docs/USAGE.md](docs/USAGE.md) | Credentials, mounted projects and daily use |
+| [docs/TOOLS.md](docs/TOOLS.md) | Included tools and why they are here |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Recorded failures and their fixes |
+| [.github/workflows/build-push.yml](.github/workflows/build-push.yml) | Trusted build, verification, scanning and publication |
+| [.github/workflows/validate-pr.yml](.github/workflows/validate-pr.yml) | Unprivileged PR image checks |
+| [AGENTS.md](AGENTS.md) | Repository contributor instructions |
+| [Makefile](Makefile) | Optional GNU make shortcuts around Podman |

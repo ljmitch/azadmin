@@ -17,7 +17,7 @@ if [[ "$(git rev-parse --is-shallow-repository)" != false ]]; then
 fi
 
 private_dir="$(mktemp -d)"
-trap 'rm -f -- "$private_dir/archive" "$private_dir/betterleaks" "$private_dir/findings.json" "$private_dir/scan.log"; rmdir -- "$private_dir"' EXIT
+trap 'rm -f -- "$private_dir/archive" "$private_dir/betterleaks" "$private_dir/config.toml" "$private_dir/findings.json" "$private_dir/scan.log"; rmdir -- "$private_dir"' EXIT
 mkdir -p reports
 release="$(curl -fsSL --retry 3 "https://api.github.com/repos/betterleaks/betterleaks/releases/$selector")"
 tag="$(jq -er 'select(.draft == false and .prerelease == false) | .tag_name' <<< "$release")"
@@ -36,12 +36,12 @@ printf '%s  %s\n' "${digest#sha256:}" "$private_dir/archive" | sha256sum -c --st
 tar -xzf "$private_dir/archive" --no-same-owner -C "$private_dir" betterleaks
 printf 'Betterleaks %s\n' "$tag"
 
-# Findings and scanner output stay private, even on failure. Credential validation
-# and target-provided configuration are disabled for untrusted source.
-unset BETTERLEAKS_CONFIG BETTERLEAKS_CONFIG_TOML GITLEAKS_CONFIG GITLEAKS_CONFIG_TOML
+# Explicitly load built-in rules even on older releases that auto-load repository config.
+# Keep findings private and leave live credential validation disabled.
+printf '[extend]\nuseDefault = true\n' > "$private_dir/config.toml"
 status=0
 "$private_dir/betterleaks" git --log-opts=HEAD --redact=100 --no-banner \
-  --ignore-gitleaks-allow --gitleaks-ignore-path "$private_dir" \
+  --config "$private_dir/config.toml" --ignore-gitleaks-allow --gitleaks-ignore-path "$private_dir" \
   --timeout 300 --exit-code 23 --report-format json --report-path "$private_dir/findings.json" . \
   > "$private_dir/scan.log" 2>&1 || status=$?
 

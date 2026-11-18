@@ -34,7 +34,8 @@ environment-specific facts. Keep examples generic (`<org>`, `<acr>`).
 - Do not `terraform apply`, `az deployment`, push, open a PR, rotate
   secrets, or change a live cloud resource unless the user explicitly asks.
 - Do not invent resource IDs, subscription facts, or "I applied it".
-- Tools float to latest at **build time**. Do not re-introduce
+- Tools float in their configured channels by default at **build time**.
+  Use documented version build arguments for explicit overrides. Do not re-introduce
   `GRAPH_MODULE_VERSION` / `AZ_MODULE_VERSION`. All Graph leaves install
   together in one `Install-Module` ([scripts/Install-PsModules.ps1](scripts/Install-PsModules.ps1)).
 - Never put `#` comments inside a backslash-continued
@@ -81,8 +82,9 @@ podman run --rm -v ${PWD}:/work -w /work admin-toolbox:latest pwsh -NoProfile -F
 
 `Verify-Toolbox.ps1` is **not** baked into the image. Bind-mount the repo.
 
-CI uses Docker Buildx on GitHub-hosted `ubuntu-latest` (not Podman) and must
-pass verification, vulnerability and secret scans before pushing to GHCR.
+CI uses Docker Buildx on GitHub-hosted `ubuntu-latest` and must pass
+verification, Betterleaks Git history scanning, and Trivy source and image
+scans before pushing to GHCR.
 Keep HIGH/CRITICAL findings (including unfixed ones) blocking unless a specific
 reviewed exception policy is separately authorised. Scanner errors are failures.
 Do not upload raw secret matches or image-config environment/history values.

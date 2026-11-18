@@ -78,7 +78,13 @@ Test-Binary git @('--version') -Match '^git version'
 Test-Binary terraform @('version') -Match 'Terraform v'
 Test-Binary tflint @('--version') -Match 'TFLint version'
 Test-Binary checkov @('--version') -Match '\d+\.\d+\.\d+'
-Test-Binary kubectl @('version', '--client=true', '--output=json') -Match 'clientVersion'
+try {
+    $client = Invoke-CheckedNative kubectl @('version', '--client=true', '--output=json') |
+        ConvertFrom-Json -ErrorAction Stop
+    $kubectlVersion = $client.clientVersion.gitVersion
+    if ($kubectlVersion -notmatch '^v\d+\.\d+\.\d+') { throw 'kubectl client version is missing or invalid' }
+    Add-Result 'kubectl' $true $kubectlVersion
+} catch { Add-Result 'kubectl' $false $_.Exception.Message }
 Test-Binary kubelogin @('--version') -Match '\d+\.\d+'
 Test-Binary helm @('version', '--short') -Match 'v\d+\.'
 Test-Binary yq @('--version') -Match 'version v\d+'

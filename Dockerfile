@@ -6,8 +6,8 @@
 # Optional profiles add .NET 10, then Functions Core Tools v4.
 #
 # Version philosophy:
-#   - Everything floats to latest BY DEFAULT, resolved at build time.
-#   - Base/SDK images and yq/Helm expose optional version build args.
+#   - Tools float within their configured feeds and release channels.
+#   - Version build args let you select a release for a particular build.
 #   - Refresh floating layers deliberately with --build-arg BUILD_DATE=<ts>.
 # ---------------------------------------------------------------------------
 
@@ -16,12 +16,6 @@ ARG DOTNET_SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0-noble
 ARG TOOLBOX_PROFILE=core
 
 FROM ${BASE_IMAGE} AS core
-
-# ---- Tool versions ----------------------------------------------------------
-# Pass "latest" (the default) to resolve at build time via GitHub releases,
-# or pin explicitly, e.g.: --build-arg YQ_VERSION=v4.48.2
-ARG YQ_VERSION=latest
-ARG HELM_VERSION=latest
 
 # Cache-buster: --build-arg BUILD_DATE=$(Get-Date -Format yyyyMMddHHmm)
 # forces re-resolution of every floating layer from this point down.
@@ -78,15 +72,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends postgresql-comm
 # ---- PowerShell 7 via packages.microsoft.com (PMC) --------------------------
 # PMC lag scar: new pwsh announcements can lag the feed by days. See
 # docs/TROUBLESHOOTING.md before assuming breakage is ours.
+ARG PWSH_VERSION=latest
 RUN . /etc/os-release \
  && TERM=dumb wget -q https://packages.microsoft.com/config/ubuntu/$VERSION_ID/packages-microsoft-prod.deb \
  && TERM=dumb dpkg -i packages-microsoft-prod.deb && rm packages-microsoft-prod.deb \
  && apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends powershell \
+ && package=powershell \
+ && { [ "$PWSH_VERSION" = latest ] || package="powershell=$PWSH_VERSION"; } \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$package" \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- Azure CLI - separate Microsoft feed (docs-confirmed on noble) -----------
 # Ref: https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-linux
+ARG AZURE_CLI_VERSION=latest
 RUN mkdir -p /etc/apt/keyrings \
  && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc \
       | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg \
@@ -95,16 +93,21 @@ RUN mkdir -p /etc/apt/keyrings \
  && printf 'Types: deb\nURIs: https://packages.microsoft.com/repos/azure-cli/\nSuites: %s\nComponents: main\nArchitectures: %s\nSigned-by: /etc/apt/keyrings/microsoft.gpg\n' \
       "$AZ_DIST" "$(dpkg --print-architecture)" \
       > /etc/apt/sources.list.d/azure-cli.sources \
- && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y azure-cli \
+ && package=azure-cli \
+ && { [ "$AZURE_CLI_VERSION" = latest ] || package="azure-cli=$AZURE_CLI_VERSION"; } \
+ && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "$package" \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- GitHub CLI (gh) ----------------------------------------------------------
+ARG GH_VERSION=latest
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
      -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
       > /etc/apt/sources.list.d/github-cli.list \
- && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y gh \
+ && package=gh \
+ && { [ "$GH_VERSION" = latest ] || package="gh=$GH_VERSION"; } \
+ && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "$package" \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- Azure CLI extensions (admin-relevant) ------------------------------------
@@ -113,9 +116,12 @@ RUN az extension add --name azure-devops --yes \
  && az extension add --name ssh --yes
 
 # ---- Bicep (bundled with az) --------------------------------------------------
-RUN az bicep install
+ARG BICEP_VERSION=latest
+RUN if [ "$BICEP_VERSION" = latest ]; then az bicep install; \
+    else az bicep install --version "$BICEP_VERSION"; fi
 
 # ---- yq (floats to latest via GitHub API; pin with --build-arg) --------------
+ARG YQ_VERSION=latest
 RUN set -eux; \
     if [ "${YQ_VERSION}" = "latest" ]; then \
       RESOLVED=$(curl -fsSL https://api.github.com/repos/mikefarah/yq/releases/latest | jq -er '.tag_name | select(startswith("v"))'); \
@@ -130,31 +136,43 @@ RUN set -eux; \
 
 # ---- Terraform (HashiCorp apt, codename-resolved) + tflint + checkov ----------
 # Codename from /etc/os-release so this layer survives a later Ubuntu bump.
+ARG TF_VERSION=latest
 RUN wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor \
        -o /usr/share/keyrings/hashicorp-archive-keyring.gpg \
  && CODENAME=$(grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release || lsb_release -cs) \
  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com ${CODENAME} main" \
         > /etc/apt/sources.list.d/hashicorp.list \
- && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y terraform \
- && rm -rf /var/lib/apt/lists/* \
- && cd /tmp \
- && TFLINT_RELEASE=$(curl -fsSL https://api.github.com/repos/terraform-linters/tflint/releases/latest | jq -er '.tag_name | select(startswith("v"))') \
+ && package=terraform \
+ && { [ "$TF_VERSION" = latest ] || package="terraform=$TF_VERSION"; } \
+ && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "$package" \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG TFLINT_VERSION=latest
+RUN cd /tmp \
+ && TFLINT_RELEASE="$TFLINT_VERSION" \
+ && { [ "$TFLINT_RELEASE" != latest ] || TFLINT_RELEASE=$(curl -fsSL https://api.github.com/repos/terraform-linters/tflint/releases/latest | jq -er '.tag_name | select(startswith("v"))'); } \
  && curl -fsSLO "https://github.com/terraform-linters/tflint/releases/download/${TFLINT_RELEASE}/tflint_linux_amd64.zip" \
  && curl -fsSLO "https://github.com/terraform-linters/tflint/releases/download/${TFLINT_RELEASE}/checksums.txt" \
  && grep -E '^[[:xdigit:]]{64} [ *]tflint_linux_amd64.zip$' checksums.txt > tflint-checksum.txt \
  && sha256sum -c tflint-checksum.txt \
  && unzip -o tflint_linux_amd64.zip -d /usr/local/bin \
- && rm tflint_linux_amd64.zip checksums.txt tflint-checksum.txt \
- && python3 -m venv /opt/checkov \
- && /opt/checkov/bin/python -m pip install --no-cache-dir checkov \
- && ln -s /opt/checkov/bin/checkov /usr/local/bin/checkov
+ && rm tflint_linux_amd64.zip checksums.txt tflint-checksum.txt
 
 # PEP-668: keep Checkov's dependencies separate from the distro and Azure CLI Python.
+ARG CHECKOV_VERSION=latest
+RUN package=checkov \
+ && { [ "$CHECKOV_VERSION" = latest ] || package="checkov==$CHECKOV_VERSION"; } \
+ && python3 -m venv /opt/checkov \
+ && /opt/checkov/bin/python -m pip install --no-cache-dir "$package" \
+ && ln -s /opt/checkov/bin/checkov /usr/local/bin/checkov
 
 # ---- Kubernetes (kubectl + kubelogin via az) ----------------------------------
-RUN az aks install-cli
+ARG KUBECTL_VERSION=latest
+ARG KUBELOGIN_VERSION=latest
+RUN az aks install-cli --client-version "$KUBECTL_VERSION" --kubelogin-version "$KUBELOGIN_VERSION"
 
 # ---- Helm (floats to latest via GitHub API; pin with --build-arg) --------------
+ARG HELM_VERSION=latest
 RUN set -eux; \
     if [ "${HELM_VERSION}" = "latest" ]; then \
       RESOLVED=$(curl -fsSL https://api.github.com/repos/helm/helm/releases/latest | jq -er '.tag_name | select(startswith("v"))'); \
@@ -173,15 +191,25 @@ RUN set -eux; \
     helm version --short
 
 # ---- Azure Storage copy tool (azcopy - binary-distributed) ---------------------
-RUN curl -fsSL https://aka.ms/downloadazcopy-v10-linux -o /tmp/azcopy.tar.gz \
+ARG AZCOPY_VERSION=latest
+RUN url=https://aka.ms/downloadazcopy-v10-linux \
+ && if [ "$AZCOPY_VERSION" != latest ]; then \
+      version="${AZCOPY_VERSION#v}"; \
+      url="https://github.com/Azure/azure-storage-azcopy/releases/download/v${version}/azcopy_linux_amd64_${version}.tar.gz"; \
+    fi \
+ && curl -fsSL "$url" -o /tmp/azcopy.tar.gz \
  && tar xzf /tmp/azcopy.tar.gz --strip-components=1 --wildcards -C /usr/local/bin '*/azcopy' \
  && rm /tmp/azcopy.tar.gz \
  && azcopy --version
 
 # ---- Azure Developer CLI (azd) --------------------------------------------------
+ARG AZD_VERSION=latest
 RUN curl -fsSL https://aka.ms/install-azd.sh -o /tmp/install-azd.sh \
- && bash /tmp/install-azd.sh \
- && rm /tmp/install-azd.sh
+ && version="$AZD_VERSION" \
+ && { [ "$version" != latest ] || version=stable; } \
+ && bash /tmp/install-azd.sh --version "$version" \
+ && rm /tmp/install-azd.sh \
+ && azd version
 
 # ---- PowerShell modules (Az + curated Graph leaves + Exchange) ----------------
 # Gallery latest at build time. Real .ps1 (not a backslash-continued -Command
@@ -218,8 +246,11 @@ RUN ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet
 # PMC is already configured by core. Keep GA Core Tools out of admin-only builds.
 FROM dotnet AS functions
 ENV TOOLBOX_PROFILE=functions
+ARG FUNCTIONS_VERSION=latest
 RUN apt-get update \
- && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends azure-functions-core-tools-4 \
+ && package=azure-functions-core-tools-4 \
+ && { [ "$FUNCTIONS_VERSION" = latest ] || package="azure-functions-core-tools-4=$FUNCTIONS_VERSION"; } \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$package" \
  && rm -rf /var/lib/apt/lists/*
 
 # Select a prebuilt stage, not runtime package installation into a running shell.

@@ -78,6 +78,20 @@ application tests local unless an actual cloud operation is deliberately intende
 
 ## 4. Scan before publishing
 
+Betterleaks scans Git patches for commits reachable from the checkout's HEAD.
+This covers credentials deleted in later commits. The job fetches full history
+and downloads the latest stable Betterleaks release from GitHub, verifying the
+archive's SHA-256 against release metadata. Set the GitHub repository variable
+`BETTERLEAKS_VERSION` to a stable v1 tag such as `v1.10.1` for a specific release.
+The wrapper currently supports the v1 CLI and stops if GitHub's latest release
+moves to a new major. Upgrade the wrapper after checking that major's CLI and
+report format. See the [Betterleaks releases](https://github.com/betterleaks/betterleaks/releases).
+
+Findings and scanner errors block the build. CI keeps a count, release tag and
+archive hash. It disables live credential validation and scans with built-in
+rules while ignoring repository-supplied allow comments and ignore files.
+Trivy also scans the current checkout for secrets before building.
+
 The workflow builds, verifies and scans a locally loaded artifact before pushing
 that same image. It does not rebuild a different image for publication. Each
 profile gets its own evidence and must satisfy the gate.
@@ -86,8 +100,9 @@ Trivy inspects the built image for OS/language vulnerabilities and secrets,
 retains a complete vulnerability JSON report and SBOM, and blocks HIGH/CRITICAL
 vulnerabilities as well as secret findings. Unfixed vulnerabilities are included.
 Authentication, database-download and scanner execution errors fail the check;
-they are not treated as clean results. See the checked-in scan script for the
-pinned scanner version and exact flags.
+they are not treated as clean results. The Trivy binary is pinned with its
+checksum in [install-trivy.sh](../.github/scripts/install-trivy.sh). The
+vulnerability database refreshes separately.
 
 [Trivy supports container image and archive targets](https://trivy.dev/docs/latest/guide/target/container_image/).
 The scanner is a CI/local validation tool, not another always-installed toolbox
@@ -148,10 +163,26 @@ A successful weekly refresh does not patch containers already running elsewhere.
 Pull the approved replacement and recreate your toolbox session. Credential
 volumes and project data have independent lifecycles and remain your responsibility.
 
-## Source images and version policy
+## Choose tool versions
 
-The workflow passes these repository variables explicitly as build arguments.
-Local builds use Dockerfile defaults unless equivalent arguments are supplied:
+For everyday work, use `make build-fresh` or the PowerShell refresh command in
+section 2. This pulls fresh parents and asks each installer for the current
+release in its configured channel. Cached builds can reuse the previous version.
+
+Use build arguments when a project needs specific versions. For example,
+these arguments select versions available during the November review.
+
+```powershell
+podman build --pull=always --build-arg TOOLBOX_PROFILE=core `
+  --build-arg TF_VERSION=1.17.2-1 --build-arg KUBECTL_VERSION=v1.37.2 `
+  -t admin-toolbox:core-pinned .
+```
+
+The equivalent Make shortcut is
+`make build-fresh TAG=core-pinned TF_VERSION=1.17.2-1 KUBECTL_VERSION=v1.37.2`.
+Omit an override or set it to `latest` to return to the current channel
+release. Unavailable exact releases fail the build. The smoke log records
+installed CLI and module versions. Rebuild and verify after a change.
 
 | Variable / argument | Default | Scope |
 |---|---|---|
@@ -159,34 +190,41 @@ Local builds use Dockerfile defaults unless equivalent arguments are supplied:
 | `DOTNET_SDK_IMAGE` | `mcr.microsoft.com/dotnet/sdk:10.0-noble` | SDK source used only by dotnet/functions |
 | `TOOLBOX_PROFILE` | `core` | Local profile selector; CI validates the declared profile set |
 | `BUILD_DATE` | `unknown` | Deliberate installation-layer cache invalidation |
-| `YQ_VERSION` | `latest` | Yq release selector |
-| `HELM_VERSION` | `latest` | Helm release selector |
 
-The compatible base remains Ubuntu 24.04 with the noble .NET 10 SDK for optional
-SDK profiles. A new base release needs feed/native-library compatibility checks;
-codename-derived URLs alone do not establish support.
+The workflow reads `BASE_IMAGE` and `DOTNET_SDK_IMAGE` from GitHub repository
+variables. Set `TOOLBOX_TOOL_VERSIONS` there to one `NAME=VALUE` line per CLI
+override. Leave it empty for Dockerfile defaults. The same overrides apply to
+every CI profile that contains the tool. CI checks names against the Dockerfile
+and retains the requested overrides with the verification logs.
 
-| Component | Update policy |
-|---|---|
-| Ubuntu packages | `apt-get upgrade` and install during a fresh core build |
-| PowerShell and Azure CLI | Current packages from their separate Microsoft feeds |
-| Az / Graph / Exchange modules | Gallery latest at build; all Graph leaves installed together |
-| Terraform | HashiCorp apt package; pinning requires a reviewed install-layer edit |
-| Tflint | Upstream release with checksum verification |
-| Checkov | Current pip release in an isolated virtual environment |
-| Kubectl / kubelogin | Selected by `az aks install-cli` at build time |
-| Yq / Helm | Latest release by default; version arguments can select reviewed releases |
-| Azd / AzCopy | Current upstream installer/archive |
-| PostgreSQL client | Current PGDG metapackage |
-| Optional .NET SDK | Maintained .NET 10 noble source image |
-| Optional Core Tools | GA v4 package from PMC |
+All selectors below default to `latest`. APT selectors take the complete
+package version including the feed's revision suffix. Use
+`apt-cache madison <package>` after refreshing the configured feed's indexes
+to see the versions it still carries.
 
-Only the arguments above are implemented. There is no effective `TF_VERSION`,
-`PWSH_VERSION`, `GRAPH_MODULE_VERSION` or `AZ_MODULE_VERSION` build argument.
-To pin a different tool, change its supported installation mechanism and update
-the verifier/inventory in the same review. Do not pin Graph leaves independently.
-Floating feeds keep this personal toolbox convenient; retained artifacts and
-version reports provide traceability rather than bit-for-bit reproducible builds.
+| Selector | Exact value example | Default channel |
+|---|---|---|
+| `PWSH_VERSION` | `7.7.0-1.deb` | Microsoft APT |
+| `AZURE_CLI_VERSION` | `2.93.0-1~noble` | Azure CLI APT |
+| `GH_VERSION` | `2.105.0` | GitHub CLI APT |
+| `TF_VERSION` | `1.17.2-1` | HashiCorp APT |
+| `FUNCTIONS_VERSION` | `4.16.1-1` | Microsoft APT v4 package, functions profile |
+| `BICEP_VERSION` | `v0.49.2` | Azure CLI Bicep installer |
+| `KUBECTL_VERSION` | `v1.37.2` | AKS CLI installer, stable kubectl |
+| `KUBELOGIN_VERSION` | `v0.2.22` | AKS CLI installer |
+| `HELM_VERSION` | `v4.3.2` | Helm stable release |
+| `YQ_VERSION` | `v4.54.3` | yq stable release |
+| `TFLINT_VERSION` | `v0.63.1` | TFLint stable release |
+| `CHECKOV_VERSION` | `3.4.5` | pip in the Checkov virtual environment |
+| `AZD_VERSION` | `1.38.0` | Azure Developer CLI stable installer |
+| `AZCOPY_VERSION` | `v10.34.2` | AzCopy v10 Linux archive |
+
+Ubuntu packages, the PGDG PostgreSQL client, Azure CLI extensions, and the
+Az, Graph and Exchange Gallery modules follow their configured sources.
+All Graph leaves still install as a set. Base or SDK changes need to stay
+compatible with Ubuntu 24.04 and .NET 10. Tool pins affect the selected
+package only. To reuse the exact build with all of its dependencies, keep
+the published image digest.
 
 ## Validated profile candidates: 18 November 2026
 

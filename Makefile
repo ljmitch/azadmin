@@ -11,9 +11,11 @@ ifeq ($(filter $(PROFILE),core dotnet functions),)
 $(error PROFILE must be core, dotnet or functions)
 endif
 
+VERSION_SELECTORS := $(shell sed -nE 's/^ARG ([A-Z_]+_VERSION)=latest$$/\1/p' Dockerfile)
+VERSION_ARGS := $(foreach name,$(VERSION_SELECTORS),$(if $($(name)),--build-arg '$(name)=$($(name))'))
 BUILD_ARGS := --build-arg TOOLBOX_PROFILE=$(PROFILE) \
     --build-arg BASE_IMAGE=$(BASE_IMAGE) \
-    --build-arg DOTNET_SDK_IMAGE=$(DOTNET_SDK_IMAGE)
+    --build-arg DOTNET_SDK_IMAGE=$(DOTNET_SDK_IMAGE) $(VERSION_ARGS)
 
 VOLUMES := \
     -v admin_az:/root/.azure \

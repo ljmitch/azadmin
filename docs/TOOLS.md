@@ -104,21 +104,21 @@ here so they stay below the main toolset.
 
 | Tool | How | Versioned | Why it's here |
 |---|---|---|---|
-| `pwsh` | PMC apt | floats with PMC on noble | The shell the image drops into |
+| `pwsh` | PMC apt | `PWSH_VERSION` | The shell the image drops into |
 | `dotnet` SDK (dotnet/functions) | `/usr/share/dotnet` copied from `mcr.microsoft.com/dotnet/sdk:10.0-noble` | floats within .NET 10; `DOTNET_SDK_IMAGE` can pin a compatible image/digest | Restore, build, test and publish .NET projects |
-| `func` (functions only) | PMC apt, `azure-functions-core-tools-4` | floats within GA v4 | Scaffold/run Functions locally and publish through an authorised workflow |
-| `gh` | github-cli apt repo | floats | GitHub repo/PR/Actions work inside the container |
-| `az` CLI | azure-cli apt repo | floats | ARM/Bicep deployment + subscription plumbing; also installs Bicep via `az bicep install` |
-| `bicep` | via `az bicep install` | floats | Bicep templates without a separate download |
-| `azd` | `aka.ms/install-azd.sh` | floats | Template-first Azure app flows (`azd up`) |
-| `yq` | GitHub release binary | floats to latest by default; `--build-arg YQ_VERSION=vX.Y.Z` pins | YAML grep/edit; jq's YAML sibling |
-| `terraform` | HashiCorp apt | floats; pinning needs a reviewed apt install-layer edit | IaC day job |
-| `tflint` | GitHub release zip + sha256sum verify | floats to latest; pinning needs a reviewed release-resolution edit | Terraform static analysis |
-| `checkov` | pip in `/opt/checkov` venv, launcher on PATH | floats | IaC security/policy scan without changing distro Python packages |
-| `kubectl` | `az aks install-cli` | floats (stable at build time) | AKS operations |
-| `kubelogin` | `az aks install-cli` | floats | Entra-auth'd AKS login (mandatory on most clusters now) |
-| `helm` | upstream tarball, version resolved from GitHub | floats to latest by default; `--build-arg HELM_VERSION=vX.Y.Z` pins | K8s package manager |
-| `azcopy` | `aka.ms/downloadazcopy-v10-linux` tarball | floats | Large blob/file copy between storage accounts + local |
+| `func` (functions only) | PMC apt, `azure-functions-core-tools-4` | `FUNCTIONS_VERSION` | Scaffold/run Functions locally and publish through an authorised workflow |
+| `gh` | github-cli apt repo | `GH_VERSION` | GitHub repo/PR/Actions work inside the container |
+| `az` CLI | azure-cli apt repo | `AZURE_CLI_VERSION` | ARM/Bicep deployment and subscription management |
+| `bicep` | via `az bicep install` | `BICEP_VERSION` | Bicep template tooling |
+| `azd` | `aka.ms/install-azd.sh` | `AZD_VERSION` | Template-first Azure app flows (`azd up`) |
+| `yq` | GitHub release binary | `YQ_VERSION` | YAML grep/edit |
+| `terraform` | HashiCorp apt | `TF_VERSION` | Infrastructure as code |
+| `tflint` | GitHub release zip with SHA-256 verification | `TFLINT_VERSION` | Terraform static analysis |
+| `checkov` | pip in `/opt/checkov` venv, launcher on PATH | `CHECKOV_VERSION` | IaC security and policy scanning |
+| `kubectl` | `az aks install-cli` | `KUBECTL_VERSION` | AKS operations |
+| `kubelogin` | `az aks install-cli` | `KUBELOGIN_VERSION` | Microsoft Entra authentication for AKS |
+| `helm` | Upstream tarball with SHA-256 verification | `HELM_VERSION` | Kubernetes package manager |
+| `azcopy` | Microsoft Linux tarball | `AZCOPY_VERSION` | File copy between storage accounts and local filesystems |
 | `psql` | PGDG apt (postgres repo) | floats with PGDG `postgresql-client` metapackage | Azure Database for PostgreSQL connections |
 
 ## Optional SDK/Functions layers and image size
@@ -174,24 +174,17 @@ modules must resolve together. Mixing `-RequiredVersion` across leaves is how
 the TypeLoadException scar happened (see TROUBLESHOOTING.md). There is no
 per-leaf pin ARG; bump everything by rebuilding with `BUILD_DATE`.
 
-## ARG policy summary
+## Version controls
 
-| ARG | Default | Effect |
-|---|---|---|
-| `TOOLBOX_PROFILE` | `core` | select core, dotnet or functions image contents at build time |
-| `BASE_IMAGE` | `ubuntu:24.04` | final image base; GitHub repository variable or local build arg |
-| `DOTNET_SDK_IMAGE` | `mcr.microsoft.com/dotnet/sdk:10.0-noble` | source SDK image; pin a compatible noble .NET 10 tag/digest if required |
-| `YQ_VERSION` | `latest` | resolves from `api.github.com/repos/mikefarah/yq/releases/latest` at build; pin with explicit `vX.Y.Z` to freeze |
-| `HELM_VERSION` | `latest` | same pattern - `helm/helm` repo |
-| `BUILD_DATE` | `unknown` | cache-buster - passing a timestamp forces re-resolution of all floaters |
+CLI selectors in the inventory default to `latest` in their respective channels.
+The build guide gives the exact forms accepted by each installer and shows how
+to pass the same overrides to Make, Podman or CI.
+[Choose tool versions](BUILD.md#choose-tool-versions)
 
-To **demote a floated tool to pinned**: edit its RUN layer's release-resolution
-block with a reviewed version-embedded URL / explicit package version and expose
-a build argument if useful. Only the arguments in this table exist today;
-`TF_VERSION` and `PWSH_VERSION` are not implemented pin controls. Flip a tool back
-by restoring its reviewed floating installation mechanism.
-
-To **promote a new tool that doesn't fit either bucket**, see the last section.
+Betterleaks and Trivy run on the CI worker. Betterleaks defaults to the latest
+stable release and accepts an exact v1 tag. Trivy uses the checked-in version
+and checksum with a current vulnerability database.
+[Scan before publishing](BUILD.md#4-scan-before-publishing)
 
 ## Adding a tool
 

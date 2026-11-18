@@ -10,12 +10,53 @@ inputs:
   build-date:
     description: Cache-bust stamp for floating tools
     default: unknown
+  tool-versions:
+    description: Optional Dockerfile tool-version overrides, one NAME=VALUE per line
+    default: ""
+  betterleaks-version:
+    description: Betterleaks stable release selector
+    default: latest
   export-cache:
     description: Only trusted publication runs may update the shared build cache
     default: "false"
 runs:
   using: composite
   steps:
+    - name: Scan Git history with Betterleaks
+      shell: bash
+      env:
+        BETTERLEAKS_VERSION: ${{ inputs.betterleaks-version }}
+      run: bash .github/scripts/scan-history.sh
+    - name: Validate tool version overrides
+      id: versions
+      shell: bash
+      env:
+        TOOL_VERSIONS: ${{ inputs.tool-versions }}
+      run: |
+        mkdir -p reports
+        allowed="$(sed -nE 's/^ARG ([A-Z_]+_VERSION)=latest$/\1/p' Dockerfile)"
+        declare -A seen=()
+        : > reports/requested-tool-versions.txt
+        while IFS= read -r line; do
+          line="${line%$'\r'}"
+          [[ -n "$line" ]] || continue
+          if [[ ! "$line" =~ ^([A-Z_]+_VERSION)=[a-zA-Z0-9][a-zA-Z0-9.+:~_\-]*$ ]]; then
+            echo 'Use NAME=VERSION, one per line, for toolbox version overrides.' >&2
+            exit 2
+          fi
+          name="${BASH_REMATCH[1]}"
+          if ! grep -Fxq -- "$name" <<< "$allowed" || [[ -v 'seen[$name]' ]]; then
+            printf 'Unsupported or repeated tool version selector: %s\n' "$name" >&2
+            exit 2
+          fi
+          seen[$name]=1
+          printf '%s\n' "$line" >> reports/requested-tool-versions.txt
+        done <<< "$TOOL_VERSIONS"
+        {
+          echo 'build-args<<END_TOOL_VERSIONS'
+          cat reports/requested-tool-versions.txt
+          echo END_TOOL_VERSIONS
+        } >> "$GITHUB_OUTPUT"
     - name: Prepare evidence and scanner
       shell: bash
       run: |
@@ -43,6 +84,7 @@ runs:
           DOTNET_SDK_IMAGE=${{ inputs.dotnet-sdk-image }}
           BUILD_DATE=${{ inputs.build-date }}
           TOOLBOX_PROFILE=core
+          ${{ steps.versions.outputs.build-args }}
         cache-from: type=gha,scope=toolbox-profiles
     - name: Verify and scan core
       id: core_gate
@@ -73,6 +115,7 @@ runs:
           DOTNET_SDK_IMAGE=${{ inputs.dotnet-sdk-image }}
           BUILD_DATE=${{ inputs.build-date }}
           TOOLBOX_PROFILE=dotnet
+          ${{ steps.versions.outputs.build-args }}
         cache-from: type=gha,scope=toolbox-profiles
     - name: Verify and scan dotnet
       id: dotnet_gate
@@ -103,6 +146,7 @@ runs:
           DOTNET_SDK_IMAGE=${{ inputs.dotnet-sdk-image }}
           BUILD_DATE=${{ inputs.build-date }}
           TOOLBOX_PROFILE=functions
+          ${{ steps.versions.outputs.build-args }}
         cache-from: type=gha,scope=toolbox-profiles
         cache-to: ${{ inputs.export-cache == 'true' && 'type=gha,scope=toolbox-profiles,mode=max' || '' }}
     - name: Verify and scan functions

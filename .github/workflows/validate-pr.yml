@@ -46,6 +46,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Cache-bust stamp
         id: bust
@@ -63,6 +64,8 @@ jobs:
           base-image: ${{ vars.BASE_IMAGE || 'ubuntu:24.04' }}
           dotnet-sdk-image: ${{ vars.DOTNET_SDK_IMAGE || 'mcr.microsoft.com/dotnet/sdk:10.0-noble' }}
           build-date: ${{ steps.bust.outputs.build_date }}
+          tool-versions: ${{ vars.TOOLBOX_TOOL_VERSIONS }}
+          betterleaks-version: ${{ vars.BETTERLEAKS_VERSION || 'latest' }}
       - name: Retain validation evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

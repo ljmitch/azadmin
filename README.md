@@ -97,11 +97,10 @@ passed runtime smoke checks but found release-blocking upstream dependencies
 and bundled secret samples. The new gates remain blocking; these profiles have
 not been published by this review.
 
-CI builds each profile, verifies the loaded artifact and scans that same image
-before it can be published. Trivy vulnerability and secret checks fail the
-release on their configured policy or scanner errors. JSON reports and an SBOM
-are retained as build evidence; a passing scan is time-bound, not proof that an
-image has no vulnerabilities. The scanner runs outside the toolbox.
+Betterleaks scans Git history for secrets before the build. Trivy scans the
+checkout and built images, and produces a vulnerability report and SBOM per
+profile. CI blocks publication on findings that violate scan policy or on
+scanner errors. Both scanners run on the CI worker.
 
 Tools intentionally float at **build time** through package feeds and upstream
 releases. Weekly builds refresh them; this does not update a running container
@@ -109,10 +108,10 @@ or the image already stored on your laptop. Pull an approved replacement and
 start a new container. Record a digest for an exact rollback reference: readable
 date/SHA tags alone are not registry-enforced immutability.
 
-Only yq, Helm and source-image selection expose version build arguments today.
-Other tools require a reviewed install-layer change to pin. Graph leaves remain
-one coordinated Gallery install. See the [inventory](docs/TOOLS.md) and
-[build policy](docs/BUILD.md) rather than assuming every tool has a version ARG.
+Fresh builds use the current release from each tool's feed. Select exact
+versions with build arguments such as `TF_VERSION` or `KUBECTL_VERSION`.
+Graph leaves remain one coordinated Gallery install.
+[Tool version selectors and CI overrides](docs/BUILD.md#choose-tool-versions)
 
 ## Repository map
 

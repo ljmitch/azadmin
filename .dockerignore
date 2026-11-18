@@ -20,3 +20,23 @@ Makefile
 *.pem
 *.pfx
 secrets/
+
+# Local caches, reports and credentials are never build inputs.
+.validation/
+reports/
+tests/
+.venv/
+__pycache__/
+.env
+.env.*
+**/.ssh/
+**/.azure/
+**/.Azure/
+**/.kube/
+**/IdentityCache/
+**/.mg/
+**/.IdentityService/
+**/*.key
+**/*.p12
+**/local.settings.json
+config/powershell/secret.ps1

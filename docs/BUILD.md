@@ -1,287 +1,329 @@
-# BUILD runbook
+# Build, verify, scan and release
 
-How to build, tag, and version-bump the toolbox image.
+Day to day, pull the appropriate published profile rather than rebuilding every
+time. [USAGE.md](USAGE.md) covers login and mounted projects;
+[TOOLS.md](TOOLS.md) lists each tool and its install policy.
 
-Day to day you do **not** need this file. Pull and run:
+## 1. Select a profile
 
-```powershell
-podman pull ghcr.io/ljmitch/azadmin:latest
-```
-
-Then the `podman run` in [docs/USAGE.md](USAGE.md) / [README.md](../README.md).
-The rest of this page is for changing the image itself.
-
-## Standard build
-
-```powershell
-podman build -t admin-toolbox:latest .
-```
-
-## GitHub repository image variables
-
-The workflow reads both repository variables under Settings -> Secrets and
-variables -> Actions -> Variables and passes them as Docker build args:
-
-| Repository variable / build arg | Fallback when the repository variable is blank |
+| Build argument | Result |
 |---|---|
-| `BASE_IMAGE` | `ubuntu:24.04` |
-| `DOTNET_SDK_IMAGE` | `mcr.microsoft.com/dotnet/sdk:10.0-noble` |
+| `TOOLBOX_PROFILE=core` | Default Azure/M365 admin tools, without a standalone .NET SDK or Functions CLI |
+| `TOOLBOX_PROFILE=dotnet` | Core plus the .NET 10 SDK |
+| `TOOLBOX_PROFILE=functions` | Dotnet plus GA Azure Functions Core Tools v4 |
 
-The source-image log step prints the resolved values and whether repository
-values were supplied. Buildx `pull: true` refreshes both stages. Merely adding
-a GitHub variable does not configure Docker unless the workflow passes it;
-both are wired explicitly here.
+The Dockerfile's named stages form `core -> dotnet -> functions`; the final
+stage selects the requested profile. This is
+[multi-stage image construction](https://docs.docker.com/build/building/multi-stage/),
+not installation controlled by an environment variable after startup. Select a
+profile with the build argument, or pull that profile's published image.
+The baked `TOOLBOX_PROFILE` identifies its contents for the verifier; overriding
+it at run time does not change installed tools.
 
-Local builds use the Dockerfile defaults unless the same build args are
-supplied locally. GitHub variables are not downloaded into a local build.
-The supported/tested pairing remains Ubuntu 24.04 with the noble .NET 10 SDK;
-changing the base requires reviewing SDK/native package/feed compatibility.
+The images currently support Linux/amd64. Downloads include architecture-specific
+binaries, and the Dockerfile rejects unsupported architectures. An emulated
+amd64 run on another host is distinct from a native arm64 image.
 
-## Fresh-rebuild (picks up "latest" floated versions properly)
+## 2. Build a local candidate
 
-Cached layers mean a plain rebuild won't re-resolve floating tools - yq, helm,
-tflint, checkov, az CLI, Graph/Az modules etc. would serve you last-build's
-"latest". Two options:
-
-**Usual** - pull both source images and pass the cache-buster ARG. The final
-base defaults to `ubuntu:24.04`; a build stage supplies .NET from
-`mcr.microsoft.com/dotnet/sdk:10.0-noble`. `BUILD_DATE` invalidates the Ubuntu
-upgrade/tool layers, but cannot update the SDK bytes in a cached source image.
-Use `--pull=always` for Podman (`--pull` for Docker) as well.
+Run these examples from this repository in host PowerShell:
 
 ```powershell
-podman build --pull=always --build-arg "BUILD_DATE=$(Get-Date -Format o)" -t admin-toolbox:latest .
+$profile = 'core' # core, dotnet, functions
+$candidate = "admin-toolbox:$profile"
+podman build --build-arg "TOOLBOX_PROFILE=$profile" -t $candidate .
+if ($LASTEXITCODE -ne 0) { throw 'Build failed' }
 ```
 
-**Nuclear** - pull source images and ignore every build layer. Slowest:
+Docker uses the same profile build argument. A basic build may reuse cached
+floating-tool layers. For a deliberate refresh, pull the source images needed
+by the selected profile and invalidate the installation layers:
 
 ```powershell
-podman build --pull=always --no-cache -t admin-toolbox:latest .
+podman build --pull=always `
+  --build-arg "TOOLBOX_PROFILE=$profile" `
+  --build-arg "BUILD_DATE=$(Get-Date -Format o)" `
+  -t $candidate .
+if ($LASTEXITCODE -ne 0) { throw 'Fresh build failed' }
 ```
 
-## Functions branch acceptance
+Docker's equivalent pull flag is `--pull`. `BUILD_DATE` cannot refresh an upstream
+base image by itself. `--no-cache` bypasses instruction reuse but also needs a
+pull flag when newer parent bytes are wanted. Exact image digest pins still
+select the same parent until deliberately updated.
 
-Use a separate local candidate tag while changing the image:
+For GNU make users: `make build PROFILE=dotnet`, `make build-fresh PROFILE=functions`
+and `make verify PROFILE=functions`. These shortcuts need GNU make, a POSIX
+shell and a working Podman engine; the PowerShell commands above do not need make.
+
+## 3. Verify the candidate that was built
 
 ```powershell
-podman build --pull=always --build-arg "BUILD_DATE=$(Get-Date -Format o)" -t admin-toolbox:functions .
-podman run --rm -v ${PWD}:/work -w /work admin-toolbox:functions pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
-podman image inspect admin-toolbox:functions --format '{{.Size}}'
+podman run --rm -v "${PWD}:/work:ro" -w /work $candidate `
+  pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1 -ExpectedProfile $profile
+if ($LASTEXITCODE -ne 0) { throw 'Verification failed' }
+podman image inspect $candidate --format '{{.Size}}'
 ```
 
-Compare size/history with the previous image if retained. A rebuild plus
-`Verify-Toolbox.ps1` is required before promoting a tag. Also build/run the
-intended .NET project and test its HTTP/queue path separately; the version
-smoke test is not an application integration test. This branch has not been
-published merely because these source changes exist.
+The verifier is not baked into the image. A rebuild plus this verifier is
+required after changing the Dockerfile, installation script or verification
+contract. Each profile must contain exactly its advertised optional tool set;
+core must not silently inherit the standalone SDK or Core Tools.
 
-For Docker Desktop, the build equivalent is `docker build --pull` with the
-same build arg/tag; the run/inspect commands use `docker` in place of `podman`.
+Version and import checks are useful acceptance gates, not an application test.
+For functions, compile and run the intended project, check its actual route or
+trigger and validate dependencies. A local storage emulator is separate from
+Azure identity or access to a real Service Bus namespace. Keep emulator and
+application tests local unless an actual cloud operation is deliberately intended.
 
-Local check on 2026-11-04: Docker built `admin-toolbox:functions-review` from
-this branch and the complete `Verify-Toolbox.ps1` passed. The image reported
-Ubuntu 24.04.5, .NET SDK 10.0.403, Core Tools 4.16.0 and PowerShell 7.6.9.
-A temporary .NET 10 HTTP function compiled/started inside it and returned
-HTTP 200 using a separate local Azurite container. No Azure login, deployment,
-Service Bus message operation or registry push was performed. The disposable
-test containers/network were removed; the local review image was retained.
+## 4. Scan before publishing
 
-The built image reported 7,341,607,841 bytes (about 7.3 GB unpacked). Its
-`/usr/share/dotnet` directory occupied about 624 MiB and Core Tools about
-1.3 GiB. This is not a measured before/after delta against an older image:
-other floating tools also refreshed. Compressed registry downloads and shared
-layer storage differ from the unpacked total. The extra capability is
-intentional for this personal toolbox; Azurite/Node/npm were not added.
+Betterleaks scans Git patches for commits reachable from the checkout's HEAD.
+This covers credentials deleted in later commits. The job fetches full history
+and downloads the latest stable Betterleaks release from GitHub, verifying the
+archive's SHA-256 against release metadata. Set the GitHub repository variable
+`BETTERLEAKS_VERSION` to a stable v1 tag such as `v1.10.1` for a specific release.
+The wrapper currently supports the v1 CLI and stops if GitHub's latest release
+moves to a new major. Upgrade the wrapper after checking that major's CLI and
+report format. See the [Betterleaks releases](https://github.com/betterleaks/betterleaks/releases).
 
-## Pinning instead of floating
+Findings and scanner errors block the build. CI keeps a count, release tag and
+archive hash. It disables live credential validation and scans with built-in
+rules while ignoring repository-supplied allow comments and ignore files.
+Trivy also scans the current checkout for secrets before building.
 
-Yq/Helm expose version build args. `DOTNET_SDK_IMAGE` can pin the .NET SDK
-source to a compatible noble .NET 10 image tag/digest. Other tool policies
-are listed below; they do not all expose version args:
+The workflow builds, verifies and scans a locally loaded artifact before pushing
+that same image. It does not rebuild a different image for publication. Each
+profile gets its own evidence and must satisfy the gate.
 
-```powershell
-# Specific release of yq or helm:
-podman build -t admin-toolbox:latest --build-arg YQ_VERSION=v4.48.2 .
-podman build -t admin-toolbox:latest --build-arg HELM_VERSION=v3.16.1 .
-```
+Trivy inspects the built image for OS/language vulnerabilities and secrets and
+retains a vulnerability report and SBOM. Each profile has separate build,
+smoke test and image scan steps. The run summary shows the smoke test and
+scan outcomes alongside the findings.
 
-Pins applied this way are one-off builds. To make a pin the *new default*,
-change the ARG in the Dockerfile header so future default builds carry it.
+- PRs, branch pushes and validation-only runs warn on image findings and
+  still upload the full evidence, including unfixed vulnerabilities.
+- GHCR publication blocks on HIGH/CRITICAL findings (including unfixed ones),
+  image secret findings and end-of-life OS results in any profile.
+- Build failures, failed smoke tests, source secret findings, scanner errors
+  and invalid scan reports fail CI in both modes.
 
-Az, Graph, and ExchangeOnlineManagement have no version ARG: they take
-gallery latest at build time. Re-resolve with `BUILD_DATE` (or `--no-cache`).
+The Trivy binary is pinned with its
+checksum in [install-trivy.sh](../.github/scripts/install-trivy.sh). The
+vulnerability database refreshes separately.
 
-## Tag after verification only
+[Trivy supports container image and archive targets](https://trivy.dev/docs/latest/guide/target/container_image/).
+The scanner is a CI/local validation tool, not another always-installed toolbox
+package. Local scan helpers require their documented container engine and shell;
+PowerShell source parsing alone does not execute a scan.
 
-```powershell
-$today = Get-Date -Format 'yyyy-MM-dd'
-podman tag admin-toolbox:latest "admin-toolbox:$today"
-```
+Reports can contain sensitive paths or a detected credential. CI retains full
+vulnerability JSON, a CycloneDX SBOM, tool/image metadata and sanitized secret
+finding counts for seven days. It does not retain raw secret matches in artifacts
+or print them in the job log. GitHub run artifacts follow repository/run access;
+for a public repository, assume retained reports are visible to others. Use an
+appropriately restricted local location for deeper secret investigation.
+Rotate a detected secret and investigate its origin. Do not add blanket
+ignores or `--ignore-unfixed` just to make this administrative toolbox green.
+Where a genuine exception is needed, define its advisory/digest scope, owner,
+rationale, compensating control and expiry as a separately reviewed policy change.
 
-Rollback later = `podman tag admin-toolbox:$today admin-toolbox:latest` from
-an older dated tag.
+An SBOM is an inventory, not a signature or vulnerability decision. This workflow
+retains evidence separately; it does not claim deployed signature enforcement or
+registry-attached attestations. New advisories can affect an image after a passing
+build, which is why refreshing and rescanning still matter.
 
-## Verify after every rebuild
+## 5. Publish and consume a reviewed image
 
-The verify script is NOT in the image - mount the repo in first:
+GitHub-hosted Ubuntu CI uses Docker Buildx. Local use stays Podman. PRs build
+without registry credentials or publication rights. Publication is restricted
+to the trusted main-branch path after successful checks. A branch validation
+run is not permission to replace the released `latest` image.
 
-```powershell
-podman run --rm -v ${PWD}:/work -w /work admin-toolbox:latest pwsh -NoProfile -File .\scripts\Verify-Toolbox.ps1
-```
+The publisher runs on qualifying main-branch pushes and the Monday 04:00 UTC
+refresh. Manual dispatch defaults to validation only; publication additionally
+requires main and the explicit publish input. Non-main branch validation and PR
+checks have no registry login/push. All three profiles must pass before any of
+that run's images are published.
 
-All checks must say `VERIFY PASSED` before you tag the image.
-
-## Current pin/float policy (Nov 2026)
-
-| Component | Mode | Control |
+| Profile | Moving aliases | Unique run tag |
 |---|---|---|
-| Final base | `BASE_IMAGE`, default Ubuntu 24.04 | GitHub repository variable or local `--build-arg BASE_IMAGE=...`; other bases need compatibility review |
-| .NET SDK source | rolling `10.0-noble` image by default | refresh with `--pull=always`; `DOTNET_SDK_IMAGE` can select a compatible pinned tag/digest |
-| Functions Core Tools | GA v4 from PMC noble apt | refresh install layer with `BUILD_DATE` or `--no-cache` |
-| Ubuntu base packages (`libc6`, `base-files`, ...) | `apt-get upgrade` on the first apt layer | cache-bust (`BUILD_DATE`) or `--no-cache`; a plain rebuild reuses the old upgrade |
-| yq | floats to GitHub latest (default) | `--build-arg YQ_VERSION=vX.Y.Z` to pin |
-| helm | floats to GitHub latest (default) | `--build-arg HELM_VERSION=vX.Y.Z` to pin |
-| PowerShell (pwsh) | floats via PMC apt (noble feed) | cache-bust + PMC handles it; .deb fallback below if the feed lags |
-| Azure CLI | floats via `repos/azure-cli/` apt | cache-bust to re-fetch |
-| Az PowerShell module | floats to gallery latest | cache-bust (`BUILD_DATE`) to re-fetch |
-| Microsoft.Graph leaves | floats, ALL leaves in one `Install-Module` | same - they resolve together; do not pin leaves independently |
-| ExchangeOnlineManagement | floats to gallery latest | n/a |
-| Terraform | floats via HashiCorp apt (noble-compatible, codename-resolved) | re-pin via `apt-get install -y "terraform=${TF_VERSION}-1"` if needed |
-| tflint | floats to GitHub latest + SHA256 checksum verify | swap `releases/latest/download/` for `releases/download/vX.Y.Z/` in Dockerfile |
-| checkov | floats via pip | n/a |
-| kubectl / kubelogin | floats via `az aks install-cli` | n/a |
-| azd | floats via install script | n/a |
-| azcopy | floats via aka.ms alias | n/a |
-| psql client | floats via PGDG (18.x at time of writing, not Ubuntu's aged 16) | pin via `apt-get install -y postgresql-client-16` if needed |
+| core | `latest`, `core` | `run-<run-id>-<attempt>-core` |
+| dotnet | `dotnet` | `run-<run-id>-<attempt>-dotnet` |
+| functions | `functions` | `run-<run-id>-<attempt>-functions` |
 
-To demote a floating tool to pinned: in the RUN layer, replace the
-release resolution block with a version-embedded URL, and update the ARG.
+The unique run tag distinguishes rebuilds and retries of the same source commit.
+Registry write/deletion protection is a separate policy; retain the published
+digest as the artifact identity. No date or source-SHA alias is advertised as an
+immutable release.
 
-## PMC feed notes (war stories)
+The default profile becomes core after these changes are merged and the first
+successful publication completes. Use `:functions` when you want the previous
+all-in SDK/Core Tools capability; do not expect the new core default to build
+Functions projects.
 
-1. **`azure-cli` is NEVER in the general PMC feed.** It ships from
-   `https://packages.microsoft.com/repos/azure-cli/` (suite matches the
-   detected Ubuntu codename). The general PMC feed at
-   `packages.microsoft.com/config/ubuntu/<ver>/` provides PowerShell and
-   other MS packages only.
-2. **New Ubuntu codename lag happens.** As of 14-Sep-2026, 24.04 (noble)
-   is the base of choice because the PMC noble feed carries `powershell`
-   reliably; experimental 26.04 builds showed base-image viability but we
-   want PMC stability before committing. Re-check monthly.
-3. **Base-version-agnostic repos in play.** Repo URIs resolve the Ubuntu
-   codename via `grep -oP '(?<=UBUNTU_CODENAME=).*' /etc/os-release` -
-   flipping `FROM ubuntu:26.04` later won't require per-line repo edits,
-   just PMC feed availability.
+A release tag helps navigation; pin the approved `repository@sha256:...` reference
+for exact repeatability. Neither a date tag nor a source SHA proves immutable
+registry policy, and two builds of the same commit can resolve different floating
+tool versions. Retain the actual digest, source commit, profile and build evidence.
 
-### Fallback: PowerShell via universal .deb
+A successful weekly refresh does not patch containers already running elsewhere.
+Pull the approved replacement and recreate your toolbox session. Credential
+volumes and project data have independent lifecycles and remain your responsibility.
 
-If the PMC block ever errors with `Unable to locate package powershell`,
-comment it out and use the GitHub universal package:
+## Choose tool versions
 
-```dockerfile
-ARG PWSH_VERSION=7.6.6
-RUN wget -q https://github.com/PowerShell/PowerShell/releases/download/v${PWSH_VERSION}/powershell_${PWSH_VERSION}-1.deb_amd64.deb -O /tmp/pwsh.deb \
- && apt-get update && apt-get install -y /tmp/pwsh.deb && rm /tmp/pwsh.deb
-```
+For everyday work, use `make build-fresh` or the PowerShell refresh command in
+section 2. This pulls fresh parents and asks each installer for the current
+release in its configured channel. Cached builds can reuse the previous version.
+CI pulls the base and SDK images and refreshes floating tool layers by default
+on PRs, branch pushes, `main` pushes and scheduled runs. Manual runs can disable
+the tool refresh with `cache_bust: false`. Explicit version overrides still apply.
 
-(The azure-cli block is independent - leave it alone.)
-
-Note: the current base (noble) works with the PMC apt path; the `.deb`
-fallback is a contingency plan.
-
-## Pushing to GHCR (CI)
-
-GitHub Actions (`.github/workflows/build-push.yml`) builds with **Docker
-Buildx** on `ubuntu-latest`, runs `scripts/Verify-Toolbox.ps1`, then pushes
-to `ghcr.io/<owner>/<repo>`. Docker is the CI path; Podman stays for local
-builds. GitHub-hosted Ubuntu runners include both (see
-[runner-images](https://github.com/actions/runner-images)) but Podman on
-those images has had version/registry churn; the official `docker/*` actions
-target GHCR.
-
-Triggers:
-
-- Weekly Monday 04:00 UTC - passes `BUILD_DATE`; Buildx `pull: true` refreshes
-  Ubuntu and the SDK source, then floating apt/tools resolve again
-- Push to `main` that touches the Dockerfile, scripts, profile, or the
-  workflow itself - pulls source images and uses layer cache, no `BUILD_DATE`
-- Actions tab -> Run workflow - optional cache-bust checkbox (on by default)
-
-Tags pushed after verify: `latest`, `YYYY-MM-DD`, `sha-<shortsha>`.
+Use build arguments when a project needs specific versions. For example,
+these arguments select versions available during the November review.
 
 ```powershell
-podman pull ghcr.io/ljmitch/azadmin:latest
-podman pull ghcr.io/ljmitch/azadmin:2026-09-16   # pin a day's build
+podman build --pull=always --build-arg TOOLBOX_PROFILE=core `
+  --build-arg TF_VERSION=1.17.2-1 --build-arg KUBECTL_VERSION=v1.37.2 `
+  -t admin-toolbox:core-pinned .
 ```
 
-Run it (full persist) from any folder:
+The equivalent Make shortcut is
+`make build-fresh TAG=core-pinned TF_VERSION=1.17.2-1 KUBECTL_VERSION=v1.37.2`.
+Omit an override or set it to `latest` to return to the current channel
+release. Unavailable exact releases fail the build. The smoke log records
+installed CLI and module versions. Rebuild and verify after a change.
 
-```powershell
-podman run -it --rm `
-  -v ${PWD}:/work -w /work `
-  -v admin_az:/root/.azure `
-  -v admin_azps:/root/.Azure `
-  -v admin_graph:/root/.local/share/IdentityCache `
-  -v admin_kube:/root/.kube `
-  ghcr.io/ljmitch/azadmin:latest
-```
+| Variable / argument | Default | Scope |
+|---|---|---|
+| `BASE_IMAGE` | `ubuntu:24.04` | Core base, inherited by all profiles |
+| `DOTNET_SDK_IMAGE` | `mcr.microsoft.com/dotnet/sdk:10.0-noble` | SDK source used only by dotnet/functions |
+| `TOOLBOX_PROFILE` | `core` | Local profile selector; CI validates the declared profile set |
+| `BUILD_DATE` | `unknown` | Deliberate installation-layer cache invalidation |
 
-First successful publish creates a **private** GHCR package
-([docs](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pushing-container-images)).
-For anonymous pull from this public repo: GitHub -> Packages -> the image ->
-Package settings -> Change visibility -> Public.
+The workflow reads `BASE_IMAGE` and `DOTNET_SDK_IMAGE` from GitHub repository
+variables. Set `TOOLBOX_TOOL_VERSIONS` there to one `NAME=VALUE` line per CLI
+override. Leave it empty for Dockerfile defaults. The same overrides apply to
+every CI profile that contains the tool. CI checks names against the Dockerfile
+and retains the requested overrides with the verification logs.
 
-No extra PAT. The workflow uses `GITHUB_TOKEN` with `packages: write`. The
-Dockerfile `org.opencontainers.image.source` label links the package to this
-repo so that token is allowed to push.
+All selectors below default to `latest`. APT selectors take the complete
+package version including the feed's revision suffix. Use
+`apt-cache madison <package>` after refreshing the configured feed's indexes
+to see the versions it still carries.
 
-## Pushing to a registry (manual, optional)
+| Selector | Exact value example | Default channel |
+|---|---|---|
+| `PWSH_VERSION` | `7.7.0-1.deb` | Microsoft APT |
+| `AZURE_CLI_VERSION` | `2.93.0-1~noble` | Azure CLI APT |
+| `GH_VERSION` | `2.105.0` | GitHub CLI APT |
+| `TF_VERSION` | `1.17.2-1` | HashiCorp APT |
+| `FUNCTIONS_VERSION` | `4.16.1-1` | Microsoft APT v4 package, functions profile |
+| `BICEP_VERSION` | `v0.49.2` | Azure CLI Bicep installer |
+| `KUBECTL_VERSION` | `v1.37.2` | AKS CLI installer, stable kubectl |
+| `KUBELOGIN_VERSION` | `v0.2.22` | AKS CLI installer |
+| `HELM_VERSION` | `v4.3.2` | Helm stable release |
+| `YQ_VERSION` | `v4.54.3` | yq stable release |
+| `TFLINT_VERSION` | `v0.63.1` | TFLint stable release |
+| `CHECKOV_VERSION` | `3.4.5` | pip in the Checkov virtual environment |
+| `AZD_VERSION` | `1.38.0` | Azure Developer CLI stable installer |
+| `AZCOPY_VERSION` | `v10.34.2` | AzCopy v10 Linux archive |
 
-```powershell
-podman tag admin-toolbox:latest <your-acr>.azurecr.io/admin-toolbox:latest
-az acr login --name <your-acr>
-podman push <your-acr>.azurecr.io/admin-toolbox:latest
-```
+Ubuntu packages, the PGDG PostgreSQL client, Azure CLI extensions, and the
+Az, Graph and Exchange Gallery modules follow their configured sources.
+All Graph leaves still install as a set. Base or SDK changes need to stay
+compatible with Ubuntu 24.04 and .NET 10. Tool pins affect the selected
+package only. To reuse the exact build with all of its dependencies, keep
+the published image digest.
 
-Only do this if the image content is genuinely shareable - it contains no
-secrets, but your org's policy is the final word. For a public repo the
-correct target is GHCR (`ghcr.io/ljmitch/azadmin`), which CI already publishes.
+## Validated profile candidates: 18 November 2026
 
-## Dependency updates and PR validation
+All three profiles were rebuilt with Docker Desktop on Linux/amd64 and passed
+the updated verifier without network access or credential mounts. The native
+exit-code regression checks and all 21 scan-policy fixtures passed. A temporary
+.NET 10 console project also restored, built and ran offline in the SDK profile.
+This is local candidate evidence, not a claim about a published GHCR image.
 
-`.github/dependabot.yml` checks GitHub Actions every Monday at 09:30 UK time.
-Minor/patch updates are grouped; major updates get separate PRs for review.
-The limit is three open version-update PRs. Dependabot starts using this
-configuration after it reaches the default branch.
+| Profile | Unpacked bytes | Approximate GB | HIGH | CRITICAL | Secret findings |
+|---|---:|---:|---:|---:|---:|
+| core | 4,610,796,015 | 4.6 | 26 | 0 | 2 |
+| dotnet | 5,512,782,026 | 5.5 | 26 | 0 | 2 |
+| functions | 7,461,988,056 | 7.5 | 82 | 4 | 2 |
 
-This differs from the website configuration: there are no npm dependencies
-here. Docker update PRs are intentionally omitted. Ubuntu 24.04 and .NET 10
-noble are deliberate compatibility choices, their tags refresh on rebuild,
-and repository variables can override the Dockerfile defaults. Dependabot
-does not update those repository variables or the tools installed from
-apt, PowerShell Gallery and floating download URLs.
+These are Docker image-inspect sizes, not compressed download sizes or a sum
+of separately stored shared layers. Selecting core saves about 2.85 GB against
+the full functions profile in this build. Trivy 0.76.2 used vulnerability DB
+version 2, updated at 2026-11-18 13:03:23 UTC. Every image had a nonempty
+CycloneDX inventory and a supported Ubuntu OS; source secret scanning found
+zero matches. Findings count affected package/advisory records, not unique
+exploits or a demonstration of exploitability.
 
-`Validate toolbox PR / build-and-verify` builds and runs the complete toolbox
-verification for PRs touching image inputs, Dependabot or workflows. It uses
-`pull_request`, read-only repository permissions and no registry login/push.
-It reads the existing build cache but exports no PR cache or build-record
-artifact. New commits cancel the previous check for that PR. Documentation-only
-PRs do not run the image build. The check validates installed tools, not every
-Azure operation or application integration.
+**All three candidates fail the release policy.** The common HIGH findings
+include dependencies bundled with current Azure CLI, azd, kubectl and kubelogin,
+plus Checkov's python-ecdsa dependency. One setuptools record comes from vendor
+SBOM metadata although the active installed package reports a newer version;
+that discrepancy still needs review rather than an automatic waiver.
 
-Dependabot opens PRs; this configuration does not enable automatic merging.
-Review the diff and green check, then merge manually. Opening a PR only builds
-a local candidate on the runner. Merging an action update to the publishing
-workflow triggers the existing main-branch build and publish, in addition to
-the weekly scheduled refresh. A change only to Dependabot or the PR-validation
-workflow does not match the publishing workflow's path filter.
+The Functions profile additionally bundles old .NET dependencies. Its four
+CRITICAL records include the private `in-proc8` runtime: actual Kestrel, HTTP and
+System.Net.Http binaries reported 8.0.4 in Core Tools package 4.16.1-1. Updating
+the separate .NET 10 SDK does not patch those private files. Do not rewrite a
+vendor dependency manifest or delete legacy workers merely to hide findings.
+Track a supported upstream fix and retest the intended project.
 
-This repository is public. Standard GitHub-hosted Ubuntu runner compute is
-free for public repositories; no paid scanner, larger runner or new artifact
-storage is introduced. Recheck billing if the repository becomes private.
-See [GitHub Actions billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+The two secret findings are JWT-shaped samples in bundled Az.Attestation help.
+They remain blocked for provenance review, rather than being classified as live
+credentials or silently ignored. The unused TLS private key generated during
+PostgreSQL package setup was removed in that same installation layer; rebuilt
+images no longer contain that key or its certificate. Raw matched values and
+local validation reports are excluded from Git and the build context.
 
-Optional GitHub setting: require the PR build-and-verify check before merging.
-Because this workflow has path filters, do not require it unconditionally for
-all PRs: documentation-only PRs would wait for a check that never starts. Remove the filters before requiring this check for every PR. Repository rules and auto-merge settings are not changed
-by these files.
+Local checks also passed workflow actionlint, Bash syntax, PowerShell parsing
+and documentation-link checks. Podman and GNU make were unavailable on the
+review host, so their command examples were reviewed rather than executed.
+The first hosted validation run is separate evidence. No registry publication
+or Azure login/deployment was part of these local checks. See
+[the recorded scan and verification failures](TROUBLESHOOTING.md#20-a-version-command-existed-but-verification-still-needed-to-fail).
+
+## Historical full-image measurements
+
+The following evidence predates optional profiles. It describes the
+**2026-11-04** `admin-toolbox:functions-review` build, not a fresh result for this
+revision or proof of the current published image:
+
+- Ubuntu 24.04.5, .NET SDK 10.0.403, Core Tools 4.16.0 and PowerShell 7.6.9.
+- Complete toolbox verification passed. A temporary .NET 10 HTTP function
+  compiled/started and returned HTTP 200 using a separate local Azurite container.
+- No Azure login, deployment, Service Bus operation or registry push was performed.
+- Unpacked image size: 7,341,607,841 bytes (about 7.3 GB). SDK directory: about
+  624 MiB. Core Tools directory: about 1.3 GiB.
+
+Those directories explain why optional developer layers are useful. They are not
+a measured new core-versus-functions delta: floated packages also change between
+builds, and shared layers/compressed pulls have different sizes. Measure each
+new profile after a successful build and retain the results with its evidence.
+
+## Feed failures and dependency updates
+
+PowerShell/Core Tools use the general PMC configuration feed. Azure CLI has its
+own `repos/azure-cli` source. Do not remove the latter when repairing a PowerShell
+package failure. New Ubuntu support and PMC availability can lag; retain the
+known compatible base until a clean build verifies the proposed replacement.
+
+If a PMC PowerShell package is unavailable, use a reviewed official universal
+`.deb` as a deliberate temporary install-layer change, with its publisher checksum
+or signature checks. Do not blindly copy an old patch URL. Keep the independent
+Azure CLI feed intact. Prior failures are documented in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+Dependabot proposes GitHub Actions updates. It does not update repository image
+variables, apt-installed tools or Gallery modules. Keep version review separate
+from automated publication and do not enable automatic merging merely because
+smoke tests pass.
+
+Before requiring a PR job through branch protection, check its trigger filters:
+a path-filtered workflow may not start for documentation-only PRs. Workflow files
+do not establish repository branch policies, package visibility or external
+approval settings. Evidence artifacts have retention/storage and confidentiality
+implications even when the scanner itself is open source.

@@ -1,23 +1,7 @@
-# Build the toolbox image, smoke-test it, then push to GHCR.
-#
-# Runners: GitHub-hosted ubuntu-latest ships Docker Engine + Buildx.
-# Podman is also preinstalled on Ubuntu runner images, but version and
-# registries.conf have moved around; Docker + official docker/* actions is
-# the supported path to GHCR. Local builds stay on Podman (docs/BUILD.md).
-#
-# Software list: https://github.com/actions/runner-images
-# GHCR + GITHUB_TOKEN:
-#   https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry
-#
-# First publish is private by default. After the first green run: GitHub ->
-# Packages -> this image -> Package settings -> Change visibility -> Public
-# (needed for anonymous pull from a public repo).
-
 name: Build and push to GHCR
 
 on:
   schedule:
-    # Monday 04:00 UTC - weekly re-resolve of floated tools
     - cron: "0 4 * * 1"
   push:
     branches: [main]
@@ -26,111 +10,85 @@ on:
       - scripts/**
       - config/powershell/**
       - .dockerignore
-      - .github/workflows/build-push.yml
+      - .github/**
   workflow_dispatch:
     inputs:
       cache_bust:
-        description: Re-resolve floating tools (passes BUILD_DATE). On for weekly-style refresh.
+        description: Re-resolve floating tools with a new build stamp
         type: boolean
         default: true
+      publish:
+        description: Publish all passing profiles to GHCR (main only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ghcr-build
+  group: ghcr-build-${{ github.ref }}
   cancel-in-progress: false
 
 env:
-  BASE_IMAGE: ${{ vars.BASE_IMAGE || 'ubuntu:24.04' }}
-  DOTNET_SDK_IMAGE: ${{ vars.DOTNET_SDK_IMAGE || 'mcr.microsoft.com/dotnet/sdk:10.0-noble' }}
-  REGISTRY: ghcr.io
+  DOCKER_BUILD_RECORD_UPLOAD: "false"
 
 jobs:
+  validate-only:
+    if: github.event_name == 'workflow_dispatch' && (github.ref != 'refs/heads/main' || !inputs.publish)
+    uses: ./.github/workflows/validate-pr.yml
+    with:
+      cache_bust: ${{ inputs.cache_bust }}
+    permissions:
+      contents: read
   build-and-push:
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'workflow_dispatch' || inputs.publish)
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
       contents: read
       packages: write
-      # type=gha cache export (otherwise locking permissions can strip it)
       actions: write
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Source images in use
-        env:
-          CONFIGURED_BASE_IMAGE: ${{ vars.BASE_IMAGE }}
-          CONFIGURED_DOTNET_SDK_IMAGE: ${{ vars.DOTNET_SDK_IMAGE }}
-        run: |
-          printf 'Building from base image: %s\n' "$BASE_IMAGE"
-          printf '.NET SDK source image: %s\n' "$DOTNET_SDK_IMAGE"
-          printf 'Repository BASE_IMAGE: %s (blank = fallback)\n' "$CONFIGURED_BASE_IMAGE"
-          printf 'Repository DOTNET_SDK_IMAGE: %s (blank = fallback)\n' "$CONFIGURED_DOTNET_SDK_IMAGE"
-
-      - name: Image name (GHCR requires lowercase)
-        run: echo "IMAGE=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
-
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - name: Cache-bust stamp
         id: bust
+        env:
+          CACHE_BUST: ${{ github.event_name != 'workflow_dispatch' || inputs.cache_bust }}
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ inputs.cache_bust }}" = "true" ]; then
+          stamp=unknown
+          if [ "$CACHE_BUST" = true ]; then
             stamp="$(date -u +%Y%m%d%H%M%S)"
-            echo "build_date=${stamp}" >> "$GITHUB_OUTPUT"
-            echo "Refreshing floated tools; Buildx pulls both configured source images."
-          else
-            echo "build_date=unknown" >> "$GITHUB_OUTPUT"
           fi
-
+          printf 'build_date=%s\n' "$stamp" >> "$GITHUB_OUTPUT"
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build, verify and scan all profiles
+        uses: ./.github/actions/validate-toolbox
         with:
-          version: latest
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
+          base-image: ${{ vars.BASE_IMAGE || 'ubuntu:24.04' }}
+          dotnet-sdk-image: ${{ vars.DOTNET_SDK_IMAGE || 'mcr.microsoft.com/dotnet/sdk:10.0-noble' }}
+          build-date: ${{ steps.bust.outputs.build_date }}
+          tool-versions: ${{ vars.TOOLBOX_TOOL_VERSIONS }}
+          betterleaks-version: ${{ vars.BETTERLEAKS_VERSION || 'latest' }}
+          image-findings-policy: block
+          export-cache: "true"
+      - name: Log in to GHCR after all gates pass
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Image tags and labels
-        id: meta
-        uses: docker/metadata-action@v6
+      - name: Publish the verified local image IDs
+        run: bash .github/scripts/publish-images.sh
+      - name: Retain release evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value={{date 'YYYY-MM-DD'}}
-            type=sha,prefix=sha-
-
-      - name: Build (load locally, do not push yet)
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          pull: true
-          load: true
-          push: false
-          provenance: false
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            BASE_IMAGE=${{ env.BASE_IMAGE }}
-            DOTNET_SDK_IMAGE=${{ env.DOTNET_SDK_IMAGE }}
-            BUILD_DATE=${{ steps.bust.outputs.build_date }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Verify toolbox
-        run: |
-          IMAGE="$(echo "${{ steps.meta.outputs.tags }}" | head -n1)"
-          docker run --rm \
-            -v "${{ github.workspace }}:/work" -w /work \
-            "$IMAGE" \
-            pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
-
-      - name: Push to GHCR
-        run: |
-          echo "${{ steps.meta.outputs.tags }}" | while IFS= read -r tag; do
-            [ -z "$tag" ] && continue
-            docker push "$tag"
-          done
+          name: toolbox-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/
+          retention-days: 7
+          if-no-files-found: warn

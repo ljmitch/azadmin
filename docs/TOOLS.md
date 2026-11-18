@@ -1,8 +1,21 @@
 # TOOLS inventory
 
-Everything installed in the image, how it got there, and how it's versioned.
-Cross-check with `docs/BUILD.md` - that file is the source of truth for the
-pin/float policy (last baselined Sep 2026).
+Tools installed by each profile, how they get there and their update policy.
+Cross-check with [BUILD.md](BUILD.md) and the Dockerfile when changing the list.
+
+## Profiles
+
+| Profile | Installed tool set |
+|---|---|
+| `core` | All administration tools below except the standalone .NET SDK and Functions Core Tools |
+| `dotnet` | Core plus the .NET 10 SDK |
+| `functions` | Dotnet plus Azure Functions Core Tools v4 |
+
+Core is the default. `TOOLBOX_PROFILE` selects build-time stages, not runtime
+package installation. Select another published profile or rebuild to change
+the optional tool set. PowerShell's own bundled runtime remains in core.
+The supported image platform is Linux/amd64; hardcoded upstream downloads must
+be adapted and tested before claiming native arm64 support.
 
 ## System-level (apt, Ubuntu noble archive)
 
@@ -24,7 +37,7 @@ leave them frozen. Re-run that layer with `BUILD_DATE` or `--no-cache`.
 | `ca-certificates` | TLS trust store - every tool leans on it |
 | `jq` | JSON selectors without writing a script |
 | `rsync` | Sync mirrors between host-mounted dirs and volumes |
-| `python3` + `pip` | Required for `checkov` |
+| `python3`, `python3-venv` + `pip` | Checkov runs in its own `/opt/checkov` virtual environment |
 | `procps` | `ps`, `top`, `free`, `pgrep` - process view without hoping the base image shipped them |
 | `lsb-release` | Needed for `$(lsb_release -cs)` codename resolution |
 
@@ -65,7 +78,7 @@ here so they stay below the main toolset.
 | Tool | Why |
 |---|---|
 | `iperf3` | TCP/UDP throughput (VNet, VPN, ExpressRoute) |
-| `tcpdump` | packet capture; needs extra caps / host net to see much from a toolbox container |
+| `tcpdump` | packet capture in the selected network namespace; specific capabilities may be needed, not automatic full privilege |
 
 ### Connectivity, TLS, and addressing
 
@@ -81,52 +94,54 @@ here so they stay below the main toolset.
 
 | Repo | Supplies | Notes |
 |---|---|---|
-| `packages.microsoft.com/config/ubuntu/$VERSION_ID/` (PMC) | PowerShell (pwsh), Functions Core Tools v4 | noble feed is the working base; resolute feed lags |
+| `packages.microsoft.com/config/ubuntu/$VERSION_ID/` (PMC) | PowerShell; Core Tools only in functions | noble is the selected compatible base; verify newer feeds before changing it |
 | `packages.microsoft.com/repos/azure-cli/` (codename-resolved) | Azure CLI + Bicep | separate MS feed - NEVER in the main PMC repo |
-| `apt.releases.hashicorp.com` (codename-resolved) | Terraform | no hardcoded "noble" string; survives base bumps |
+| `apt.releases.hashicorp.com` (codename-resolved) | Terraform | derived URLs still need upstream support for a proposed base |
 | `cli.github.com/packages` | GitHub CLI (`gh`) | added because GitHub repo work is in-scope |
-| `apt.postgresql.org` (PGDG) | `postgresql-client` (latest 18.x line) | Ubuntu's archive would give 16.x - several versions behind Azure DB for PostgreSQL targets |
+| `apt.postgresql.org` (PGDG) | Current `postgresql-client` metapackage | Verify the selected client/server combination; use its recorded build version rather than assuming a permanent latest major |
 
 ## CLIs (install method → version mode)
 
 | Tool | How | Versioned | Why it's here |
 |---|---|---|---|
-| `pwsh` | PMC apt | floats with PMC on noble | The shell the image drops into |
-| `dotnet` SDK | `/usr/share/dotnet` copied from `mcr.microsoft.com/dotnet/sdk:10.0-noble` | floats within .NET 10; `DOTNET_SDK_IMAGE` can pin a compatible image/digest | Restore, build, test and publish .NET 10 projects |
-| `func` | PMC apt, `azure-functions-core-tools-4` | floats within GA v4 | Scaffold/run Functions locally and publish through an authorised workflow |
-| `gh` | github-cli apt repo | floats | GitHub repo/PR/Actions work inside the container |
-| `az` CLI | azure-cli apt repo | floats | ARM/Bicep deployment + subscription plumbing; also installs Bicep via `az bicep install` |
-| `bicep` | via `az bicep install` | floats | Bicep templates without a separate download |
-| `azd` | `aka.ms/install-azd.sh` | floats | Template-first Azure app flows (`azd up`) |
-| `yq` | GitHub release binary | floats to latest by default; `--build-arg YQ_VERSION=vX.Y.Z` pins | YAML grep/edit; jq's YAML sibling |
-| `terraform` | HashiCorp apt | floats; pin via `apt-get install -y "terraform=${TF_VERSION}-1"` if re-pinning | IaC day job |
-| `tflint` | GitHub release zip + sha256sum verify | floats to latest; pin by editing URL to `releases/download/vX.Y.Z/` | Terraform static analysis |
-| `checkov` | `pip3 --break-system-packages` | floats | IaC security/policy scan, loads hundreds of resource types |
-| `kubectl` | `az aks install-cli` | floats (stable at build time) | AKS operations |
-| `kubelogin` | `az aks install-cli` | floats | Entra-auth'd AKS login (mandatory on most clusters now) |
-| `helm` | upstream tarball, version resolved from GitHub | floats to latest by default; `--build-arg HELM_VERSION=vX.Y.Z` pins | K8s package manager |
-| `azcopy` | `aka.ms/downloadazcopy-v10-linux` tarball | floats | Large blob/file copy between storage accounts + local |
+| `pwsh` | PMC apt | `PWSH_VERSION` | The shell the image drops into |
+| `dotnet` SDK (dotnet/functions) | `/usr/share/dotnet` copied from `mcr.microsoft.com/dotnet/sdk:10.0-noble` | floats within .NET 10; `DOTNET_SDK_IMAGE` can pin a compatible image/digest | Restore, build, test and publish .NET projects |
+| `func` (functions only) | PMC apt, `azure-functions-core-tools-4` | `FUNCTIONS_VERSION` | Scaffold/run Functions locally and publish through an authorised workflow |
+| `gh` | github-cli apt repo | `GH_VERSION` | GitHub repo/PR/Actions work inside the container |
+| `az` CLI | azure-cli apt repo | `AZURE_CLI_VERSION` | ARM/Bicep deployment and subscription management |
+| `bicep` | via `az bicep install` | `BICEP_VERSION` | Bicep template tooling |
+| `azd` | `aka.ms/install-azd.sh` | `AZD_VERSION` | Template-first Azure app flows (`azd up`) |
+| `yq` | GitHub release binary | `YQ_VERSION` | YAML grep/edit |
+| `terraform` | HashiCorp apt | `TF_VERSION` | Infrastructure as code |
+| `tflint` | GitHub release zip with SHA-256 verification | `TFLINT_VERSION` | Terraform static analysis |
+| `checkov` | pip in `/opt/checkov` venv, launcher on PATH | `CHECKOV_VERSION` | IaC security and policy scanning |
+| `kubectl` | `az aks install-cli` | `KUBECTL_VERSION` | AKS operations |
+| `kubelogin` | `az aks install-cli` | `KUBELOGIN_VERSION` | Microsoft Entra authentication for AKS |
+| `helm` | Upstream tarball with SHA-256 verification | `HELM_VERSION` | Kubernetes package manager |
+| `azcopy` | Microsoft Linux tarball | `AZCOPY_VERSION` | File copy between storage accounts and local filesystems |
 | `psql` | PGDG apt (postgres repo) | floats with PGDG `postgresql-client` metapackage | Azure Database for PostgreSQL connections |
 
-## Functions tooling and image size
+## Optional SDK/Functions layers and image size
 
-The final image defaults to `ubuntu:24.04` through `BASE_IMAGE`. A build stage supplies the
-maintained .NET 10 SDK, reference packs and shared runtimes. Only
+All profiles inherit `ubuntu:24.04` through `BASE_IMAGE`. The optional dotnet
+stage supplies the maintained .NET 10 SDK, reference packs and shared runtimes. Only
 `/usr/share/dotnet` is copied, so the source SDK image's bundled PowerShell
 is not installed a second time; this toolbox keeps its existing PMC pwsh.
-The base apt layer explicitly supplies the native .NET dependencies.
+The dotnet stage explicitly supplies its native dependencies. Functions builds
+on that stage and adds Core Tools; core contains neither standalone developer tool.
 
-The SDK and Core Tools add real size. This is an interactive admin/development
-toolbox, not an application runtime image, so the capability is intentional.
+The SDK and Core Tools add real size. Keep them only in profiles where their
+development capability is needed.
 There is no new Node/npm installation, emulator process or development workload
-bundle. Run Azurite separately when required. The 2026-11-04 local candidate
+bundle. Run Azurite separately when required. The historical 2026-11-04 full candidate
 was about 7.3 GB unpacked; SDK/Core Tools directories together occupied
 roughly 2 GB. See BUILD.md for the actual
-verification and HTTP smoke-test evidence. There is no clean older-image delta
-or compressed-download claim.
+verification and HTTP smoke-test evidence. This predates the profile split;
+there is no measured new profile delta or compressed-download claim.
 
-`Get-ToolboxVersions` reports SDKs and Core Tools. The image verification checks
-that a 10.0 SDK exists and that Core Tools v4 executes successfully. It does not
+`Get-ToolboxVersions` reports the selected profile and optional tool availability.
+Verification checks that a 10.0 SDK executes in dotnet/functions, Core Tools v4
+executes only in functions, and those tools are absent from profiles excluding them. It does not
 prove an application's dependencies, Azure identity or queue consumption work.
 
 ## az CLI extensions (installed via `az extension add`)
@@ -159,24 +174,17 @@ modules must resolve together. Mixing `-RequiredVersion` across leaves is how
 the TypeLoadException scar happened (see TROUBLESHOOTING.md). There is no
 per-leaf pin ARG; bump everything by rebuilding with `BUILD_DATE`.
 
-## ARG policy summary
+## Version controls
 
-| ARG | Default | Effect |
-|---|---|---|
-| `BASE_IMAGE` | `ubuntu:24.04` | final image base; GitHub repository variable or local build arg |
-| `DOTNET_SDK_IMAGE` | `mcr.microsoft.com/dotnet/sdk:10.0-noble` | source SDK image; pin a compatible noble .NET 10 tag/digest if required |
-| `YQ_VERSION` | `latest` | resolves from `api.github.com/repos/mikefarah/yq/releases/latest` at build; pin with explicit `vX.Y.Z` to freeze |
-| `HELM_VERSION` | `latest` | same pattern - `helm/helm` repo |
-| `TF_VERSION` | informational only | Terraform floats via apt regardless; ARG documents intent |
-| `PWSH_VERSION` | informational only | PowerShell floats via PMC noble feed; use .deb fallback to pin |
-| `BUILD_DATE` | `unknown` | cache-buster - passing a timestamp forces re-resolution of all floaters |
+CLI selectors in the inventory default to `latest` in their respective channels.
+The build guide gives the exact forms accepted by each installer and shows how
+to pass the same overrides to Make, Podman or CI.
+[Choose tool versions](BUILD.md#choose-tool-versions)
 
-To **demote a floated tool to pinned**: edit its RUN layer's release-resolution
-block, replace with a version-embedded URL / explicit apt version, and bump the
-matching ARG default. Flip it back by reverting the RUN layer and letting the
-ARG read `latest`.
-
-To **promote a new tool that doesn't fit either bucket**, see the last section.
+Betterleaks and Trivy run on the CI worker. Betterleaks defaults to the latest
+stable release and accepts an exact v1 tag. Trivy uses the checked-in version
+and checksum with a current vulnerability database.
+[Scan before publishing](BUILD.md#4-scan-before-publishing)
 
 ## Adding a tool
 

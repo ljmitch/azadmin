@@ -18,8 +18,9 @@ function Get-ToolboxVersions {
         AzCLI       = (az version --query '"azure-cli"' -o tsv 2>$null)
         AzModule    = (Get-Module Az -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).Version
         GraphAuth   = (Get-Module Microsoft.Graph.Authentication -ListAvailable | Select-Object -First 1).Version
-        DotnetSDKs  = (dotnet --list-sdks 2>$null) -join '; '
-        Functions   = (func --version 2>$null | Select-Object -First 1)
+        Profile     = $env:TOOLBOX_PROFILE
+        DotnetSDKs  = if (Get-Command dotnet -ErrorAction SilentlyContinue) { (dotnet --list-sdks 2>$null) -join '; ' } else { 'Not installed - choose the dotnet or functions profile' }
+        Functions   = if (Get-Command func -ErrorAction SilentlyContinue) { func --version 2>$null | Select-Object -First 1 } else { 'Not installed - choose the functions profile' }
         GhCLI       = (gh --version 2>$null | Select-Object -First 1) -replace 'gh version ',''
         Azd         = (azd version 2>$null | Select-Object -First 1)
         AzCopy      = (azcopy --version 2>$null | Select-Object -First 1) -replace 'azcopy version ',''
@@ -40,18 +41,24 @@ function Enter-AzureContext {
         [string]$SubscriptionId
     )
     az login --tenant $TenantId --use-device-code | Out-Null
-    if ($SubscriptionId) { az account set --subscription $SubscriptionId }
-    Connect-AzAccount -Tenant $TenantId -Subscription $SubscriptionId -UseDeviceAuthentication
+    if ($LASTEXITCODE -ne 0) { throw 'Azure CLI login failed; no PowerShell login was attempted.' }
+    if ($SubscriptionId) {
+        az account set --subscription $SubscriptionId
+        if ($LASTEXITCODE -ne 0) { throw 'Azure CLI subscription selection failed.' }
+    }
+    $connect = @{ Tenant = $TenantId; UseDeviceAuthentication = $true; ErrorAction = 'Stop' }
+    if ($SubscriptionId) { $connect.Subscription = $SubscriptionId }
+    Connect-AzAccount @connect
     Write-Host "Auth complete. Check with: az account show / Get-AzContext" -ForegroundColor Green
 }
 
 function Show-MgContext {
     $ctx = Get-MgContext
     if ($ctx) {
-        $ctx | Format-List DisplayName, Scopes, Environment, ExpiresOn
+        $ctx | Format-List Account, TenantId, ClientId, AuthType, ContextScope, Scopes
     } else {
         Write-Host "No active MgGraph context. Connect with:" -ForegroundColor Yellow
-        Write-Host "  Connect-MgGraph -UseDeviceAuthentication -Scopes `"Sites.Read.All`",`"Sites.ReadWrite.All`""
+        Write-Host "  Connect-MgGraph -UseDeviceAuthentication -Scopes `"User.Read`""
     }
 }
 
@@ -61,7 +68,8 @@ function Show-ToolboxHints {
 azure-admin-toolbox quick reference:
   Get-ToolboxVersions    - what's actually in this image
   Enter-AzureContext     - az login + Connect-AzAccount for a tenant
-  Show-MgContext         - current Graph session scopes + expiry
+  Show-MgContext         - current Graph account, tenant and scopes
+  Profile               - $env:TOOLBOX_PROFILE (optional SDK tools are selected at build time)
 
 Remember the auth stance:
   - Inside the container: device-code flows only. No interactive browsers exist here.
@@ -69,8 +77,9 @@ Remember the auth stance:
   - Connect-AzAccount -UseDeviceAuthentication
   - Connect-MgGraph -UseDeviceAuthentication -Scopes "..."
 
-Volumes mounted today (listed alongside startup):
-  $(if (Test-Path /root/.azure/state) { 'admin_az  ' } else { '' })$(if (Test-Path /root/.Azure) { 'admin_azps  ' } else { '' })$(if (Test-Path /root/.local/share/IdentityCache) { 'admin_graph  ' } else { '' })$(if (Test-Path /root/.kube) { 'admin_kube' } else { '' })
+Profile: $env:TOOLBOX_PROFILE
+Credential directories may be ephemeral or mounted. Check the host run command;
+directory existence alone does not prove persistence. Prefer Graph Process scope.
 "@ -ForegroundColor Cyan
 }
 

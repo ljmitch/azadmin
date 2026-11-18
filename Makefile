@@ -1,75 +1,77 @@
-# ---------------------------------------------------------------------------
-# One-liners around podman build / run.
-# Requires GNU make. Podman machine must be running.
-# ---------------------------------------------------------------------------
+# Podman shortcuts for GNU make with a POSIX shell. Start the engine first.
+IMAGE ?= admin-toolbox
+PROFILE ?= core
+TAG ?= $(PROFILE)
+BASE_IMAGE ?= ubuntu:24.04
+DOTNET_SDK_IMAGE ?= mcr.microsoft.com/dotnet/sdk:10.0-noble
+DATED := $(shell date -u +%Y-%m-%d)
+BUILD_DATE := $(shell date -u +%Y%m%d%H%M%S)
 
-IMAGE   := admin-toolbox
-TAG     := latest
-DATED   := $(shell date +%Y-%m-%d)
-BUILD_DATE := $(shell date +%Y%m%d%H%M)
+ifeq ($(filter $(PROFILE),core dotnet functions),)
+$(error PROFILE must be core, dotnet or functions)
+endif
+
+VERSION_SELECTORS := $(shell sed -nE 's/^ARG ([A-Z_]+_VERSION)=latest$$/\1/p' Dockerfile)
+VERSION_ARGS := $(foreach name,$(VERSION_SELECTORS),$(if $($(name)),--build-arg '$(name)=$($(name))'))
+BUILD_ARGS := --build-arg TOOLBOX_PROFILE=$(PROFILE) \
+    --build-arg BASE_IMAGE=$(BASE_IMAGE) \
+    --build-arg DOTNET_SDK_IMAGE=$(DOTNET_SDK_IMAGE) $(VERSION_ARGS)
 
 VOLUMES := \
     -v admin_az:/root/.azure \
     -v admin_azps:/root/.Azure \
-    -v admin_graph:/root/.local/share/IdentityCache \
     -v admin_kube:/root/.kube
 
 .PHONY: build build-tag build-fresh shell shell-stateless verify clean logs volumes volumes-wipe pull-bases refresh size
 
-build:          ## Build :latest (floats come from cache unless --build-arg-d)
-	podman build -t $(IMAGE):$(TAG) .
+build: ## Build the selected profile; cached floating tools may be reused.
+	podman build $(BUILD_ARGS) -t $(IMAGE):$(TAG) .
 
-build-fresh:    ## Build, but re-resolve all floating tools (cache-bust)
-	podman build --pull=always --build-arg BUILD_DATE=$(BUILD_DATE) -t $(IMAGE):$(TAG) .
+build-fresh: ## Pull parents and re-resolve installed tools.
+	podman build --pull=always $(BUILD_ARGS) --build-arg BUILD_DATE=$(BUILD_DATE) -t $(IMAGE):$(TAG) .
 
-build-tag:      ## Build a date-stamped tag, then alias :latest to it
-	podman build -t $(IMAGE):$(DATED) .
-	podman tag $(IMAGE):$(DATED) $(IMAGE):$(TAG)
+build-tag: ## Build a dated candidate; verification/scanning precede promotion.
+	podman build $(BUILD_ARGS) -t $(IMAGE):$(PROFILE)-$(DATED) .
 
-shell:          ## Interactive shell with cwd + all cred volumes mounted (default)
+shell: ## Interactive shell with the workspace and credential volumes.
 	podman run -it --rm \
-	    -v $(CURDIR):/work -w /work \
+	    -v "$(CURDIR):/work" -w /work \
 	    $(VOLUMES) \
 	    $(IMAGE):$(TAG)
 
-shell-stateless: ## Interactive shell with NO credential caches - fresh login every time
+shell-stateless: ## Fresh credential login without persistent caches.
 	podman run -it --rm \
-	    -v $(CURDIR):/work -w /work \
+	    -v "$(CURDIR):/work" -w /work \
 	    $(IMAGE):$(TAG)
 
-verify:         ## Run the smoke test against :latest - MUST bind-mount the repo
+verify: ## Mount verification source read-only and require the selected profile.
 	podman run --rm \
-	    -v $(CURDIR):/work -w /work \
-	    $(IMAGE):$(TAG) pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
+	    -v "$(CURDIR):/work:ro" -w /work \
+	    $(IMAGE):$(TAG) pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1 -ExpectedProfile $(PROFILE)
 
-clean:          ## Prune dangling <none>:<none> build remnants (leaves volumes alone)
+clean: ## Review confirmation before pruning dangling images; volumes remain.
 	podman image prune
 	podman images $(IMAGE)
 
-logs:           ## Show every existing tag of the image
+logs: ## List local tags and sizes.
 	podman images $(IMAGE)
 
-volumes:        ## List the volume names that are credential caches
+volumes: ## List credential-cache volume names.
 	podman volume ls
 
-volumes-wipe:   ## Wipe every credential volume (forces fresh login across the board)
-	podman volume rm admin_az admin_azps admin_graph admin_kube
+volumes-wipe: ## Explicitly remove named credentials; next use requires login.
+	podman volume rm admin_az admin_azps admin_kube
 
-pull-bases:     ## Refresh upstream base images this Dockerfile pulls from
-	podman pull ubuntu:24.04
-	podman pull mcr.microsoft.com/dotnet/sdk:10.0-noble
-	podman pull registry.access.redhat.com/ubi9/ubi:latest
+pull-bases: ## Pull only source images used by the selected profile.
+	podman pull $(BASE_IMAGE)
+ifneq ($(PROFILE),core)
+	podman pull $(DOTNET_SDK_IMAGE)
+endif
 
-refresh:        ## Mass refresh :latest tags on all remote images (registry-mirrored)
-	podman images --format "{{.Repository}}:{{.Tag}}" | \
-	  while read -r img; do \
-	    case "$$img" in \
-	      localhost/*|*azurecr.io*) continue ;; \
-	      *:latest) podman pull "$$img" || true ;; \
-	    esac; \
-	  done
+refresh: ## Pull the published profile; running containers remain unchanged.
+	podman pull ghcr.io/ljmitch/azadmin:$(PROFILE)
 
-size:           ## Show what toolbox layers + volumes are actually consuming
+size: ## Inspect image, cache and volume storage as separate assets.
 	podman system df
 	podman images $(IMAGE) --format "{{.Repository}}:{{.Tag}} {{.Size}}"
 	@podman volume ls --format "{{.Name}}" | while read -r v; do \

@@ -1,4 +1,4 @@
-name: Validate toolbox PR
+name: Validate toolbox
 
 on:
   pull_request:
@@ -7,57 +7,71 @@ on:
       - scripts/**
       - config/powershell/**
       - .dockerignore
-      - .github/dependabot.yml
-      - .github/workflows/**
+      - .github/**
+  push:
+    branches-ignore: [main]
+    paths:
+      - Dockerfile
+      - scripts/**
+      - config/powershell/**
+      - .dockerignore
+      - .github/**
+  workflow_dispatch:
+    inputs:
+      cache_bust:
+        description: Re-resolve floating tools instead of reusing installed-tool layers
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      cache_bust:
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: toolbox-pr-${{ github.event.pull_request.number }}
+  group: toolbox-validation-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
-  BASE_IMAGE: ${{ vars.BASE_IMAGE || 'ubuntu:24.04' }}
-  DOTNET_SDK_IMAGE: ${{ vars.DOTNET_SDK_IMAGE || 'mcr.microsoft.com/dotnet/sdk:10.0-noble' }}
-  # Keep validation free of build-record artifacts and registry credentials.
   DOCKER_BUILD_RECORD_UPLOAD: "false"
 
 jobs:
-  build-and-verify:
+  build-verify-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-        with:
-          version: latest
-
-      - name: Build candidate image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          pull: true
-          load: true
-          push: false
-          provenance: false
-          tags: admin-toolbox:pr
-          build-args: |
-            BASE_IMAGE=${{ env.BASE_IMAGE }}
-            DOTNET_SDK_IMAGE=${{ env.DOTNET_SDK_IMAGE }}
-            BUILD_DATE=unknown
-          # Read the normal build cache without exporting a cache for each PR.
-          cache-from: type=gha
-
-      - name: Verify toolbox
+      - name: Cache-bust stamp
+        id: bust
+        env:
+          CACHE_BUST: ${{ github.event_name == 'pull_request' || github.event_name == 'push' || inputs.cache_bust }}
         run: |
-          docker run --rm \
-            --mount "type=bind,source=${GITHUB_WORKSPACE},target=/work,readonly" \
-            --workdir /work \
-            admin-toolbox:pr \
-            pwsh -NoProfile -File ./scripts/Verify-Toolbox.ps1
+          stamp=unknown
+          if [ "$CACHE_BUST" = true ]; then stamp="$(date -u +%Y%m%d%H%M%S)"; fi
+          printf 'build_date=%s\n' "$stamp" >> "$GITHUB_OUTPUT"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build, verify and scan all profiles
+        uses: ./.github/actions/validate-toolbox
+        with:
+          base-image: ${{ vars.BASE_IMAGE || 'ubuntu:24.04' }}
+          dotnet-sdk-image: ${{ vars.DOTNET_SDK_IMAGE || 'mcr.microsoft.com/dotnet/sdk:10.0-noble' }}
+          build-date: ${{ steps.bust.outputs.build_date }}
+          tool-versions: ${{ vars.TOOLBOX_TOOL_VERSIONS }}
+          betterleaks-version: ${{ vars.BETTERLEAKS_VERSION || 'latest' }}
+          image-findings-policy: warn
+      - name: Retain validation evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: toolbox-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/
+          retention-days: 7
+          if-no-files-found: warn

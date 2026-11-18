@@ -83,10 +83,10 @@ Expect PMC to never deliver azure-cli.
 **Cause** - PEP-668 hard-blocks pip's system-site-packages on modern
 Debian/Ubuntu.
 
-**Fix in toolbox** - `--break-system-packages` used deliberately
-(single-purpose container). Alternative if strict posture is required:
-`python3 -m venv /opt/checkov` + symlink. Enterprise-hosts hygiene note:
-never use the flag on shared machines.
+**Current fix** - Checkov installs in an isolated `/opt/checkov` virtual
+environment, exposed through `/usr/local/bin/checkov`. Earlier versions used
+`--break-system-packages`; that workaround is no longer needed and should not
+be copied onto a shared host.
 
 ## 6. tflint upstream pulled the auto-install script (Sept 2026)
 
@@ -97,10 +97,10 @@ never use the flag on shared machines.
 `install_linux.sh` from the repo. The pipe to `sh` was executing an
 empty/404 response and reported success because `sh` happily executes nothing.
 
-**Fix in toolbox** - manual install: zip + checksums.txt via
-`sha256sum --ignore-missing -c`, unzip into `/usr/local/bin`. Download URL
-is now `releases/latest/download/tflint_linux_amd64.zip` - floats by default;
-pin via explicit `releases/download/vX.Y.Z/` URL if drift bites.
+**Fix in toolbox** - resolve the latest release once, then fetch its zip and
+checksums from that same release. Verify the selected archive with `sha256sum -c`
+before unzipping into `/usr/local/bin`. Fetching the archive and checksums through
+separate moving `latest` URLs can race a new upstream release.
 
 ## 7. Module version drift across rebuilds
 
@@ -154,7 +154,7 @@ so the failing layer isn't where the bug lives.
 bash-only syntax elsewhere.
 
 **Confirmed scar 14-Sep-2026** - hit exactly this during a noble build
-port after an AI regenerated the PowerShell/PMC block. Cost: a full
+port after the PowerShell/PMC block was regenerated. Cost: a full
 13-minute rebuild to reach step 9 and watch it die there. Defensive habit:
 after any big re-layout, run `podman build` on an intermediate tag and
 eyeball the first ~30 lines out loud before walking away.
@@ -173,13 +173,12 @@ writing, and the pg client back-compat only goes so far forwards.
 (installs `postgresql-common` ahead), then `apt-get install postgresql-client`
 from the added repo pulls current upstream (18.x at time of writing).
 
-## 12. pip-as-root warning: expected here
+## 12. pip-as-root warning in the earlier system-wide installation
 
 **Symptom** - build logs end with `WARNING: Running pip as the 'root' user...`
 
-**Verdict** - informational in this image only. `--break-system-packages` +
-root-on-single-purpose-container is the intentional posture; on shared
-hosts the warning is correct. Do not chase it in the image; do not transplant
+**Current approach** - Checkov now runs in a dedicated virtual environment.
+The earlier root/system-package workaround is historical. Do not transplant
 the pattern to hosts.
 
 ## 13. `az aks get-credentials` writes where?
@@ -274,3 +273,66 @@ in a running container only refreshes indexes; `--rm` throws the upgrade away.
 **Fix in toolbox** - the first apt `RUN` does `apt-get upgrade` after `update`.
 A `BUILD_DATE` or `--no-cache` rebuild takes current noble-security. Do not
 `apt upgrade` as a day-to-day habit inside the container.
+
+## 20. A version command existed, but verification still needed to fail
+
+The old verifier reported a native CLI as present after catching its error,
+and did not consistently check native exit codes or empty JSON results.
+An unusable binary could therefore produce a green smoke test. The verifier
+now checks exit status, expected output and usable extension metadata. Its
+regression tests deliberately exercise nonzero exits, empty output and invalid
+version output; their expected FAIL lines do not mean the regression test failed.
+
+## 21. `ping -V` cannot execute after dropping every capability
+
+The November review's first smoke run used `--cap-drop ALL`. Ubuntu's ping binary
+has a file capability for `NET_RAW`, so the kernel rejected execution with
+`Operation not permitted` even for its version flag. The constrained CI smoke
+container now drops all capabilities and adds only `NET_RAW`, with no network,
+no credential mounts, a read-only source mount and no-new-privileges. Do not
+turn this into `--privileged` or ignore the verifier's error.
+
+## 22. New image scans can block otherwise working tools
+
+The 18 November review's initial images passed runtime checks but contained
+release-blocking dependency findings. Some were inside the current vendor
+releases of Azure CLI, azd, kubectl, kubelogin and Functions Core Tools; a
+Checkov dependency also had an unfixed advisory. Replacing dependencies inside
+Microsoft's private Python tree or editing dependency manifests is not a tested
+fix for those tools. Keep the gate blocking and follow the publisher's fixes.
+
+One setuptools finding came from vendor SBOM metadata while the active Azure
+CLI package metadata reported a newer version. Investigate that discrepancy;
+do not automatically treat every scanner record as proof of an active exploitable
+package, and do not silently discard it either.
+
+Secret scanning also found the unused self-signed TLS key generated by package
+setup. The PostgreSQL install layer removes that key and its public certificate
+before the layer is committed. This client toolbox does not run a TLS server
+that needs the generated key. Two JWT-shaped samples in bundled Az.Attestation
+help remain findings for separate provenance review; raw matched values are not
+written to retained CI reports. Source scanning found no credential matches.
+
+The scan policy is recorded in `scripts/scan-image.sh`. A failed gate leaves
+the existing released image untouched; it does not automatically grant a waiver
+or replace the running toolbox. Rebuild and rescan after an upstream fix.
+
+## 23. A clean source scan failed report validation
+
+The first hosted scan stopped before building: Trivy 0.76.2's `fs` subcommand
+reported `ArtifactType: repository`, but the wrapper expected `filesystem`.
+The scan had zero secret matches; the report-contract check was wrong. The
+wrapper now checks the observed repository type and accepts either null or
+empty-array Results for a clean scan. Regression fixtures use that real shape
+and still reject malformed reports and the wrong artifact type. Check the
+actual scanner report when updating its contract, rather than inferring JSON
+types from the command name.
+
+## 24. A successful smoke test appeared red beside an image finding
+
+The PR workflow originally combined the smoke test and image policy into one
+step for each profile. Current vendor packages triggered findings, which made
+the combined check fail even when the runtime checks passed. CI now reports
+builds, smoke tests and scans separately. Validation runs show image findings
+as warnings with full reports. Publication still requires a clean result from
+the blocking policy. A broken scanner or invalid report fails either workflow.

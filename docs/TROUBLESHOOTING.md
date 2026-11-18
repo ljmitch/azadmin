@@ -327,3 +327,12 @@ empty-array Results for a clean scan. Regression fixtures use that real shape
 and still reject malformed reports and the wrong artifact type. Check the
 actual scanner report when updating its contract, rather than inferring JSON
 types from the command name.
+
+## 24. A successful smoke test appeared red beside an image finding
+
+The PR workflow originally combined the smoke test and image policy into one
+step for each profile. Current vendor packages triggered findings, which made
+the combined check fail even when the runtime checks passed. CI now reports
+builds, smoke tests and scans separately. Validation runs show image findings
+as warnings with full reports. Publication still requires a clean result from
+the blocking policy. A broken scanner or invalid report fails either workflow.

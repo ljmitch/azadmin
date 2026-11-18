@@ -94,16 +94,17 @@ Full build, scan and release process: [docs/BUILD.md](docs/BUILD.md).
 
 The [18 November profile review](docs/BUILD.md#validated-profile-candidates-18-november-2026)
 passed runtime smoke checks but found release-blocking upstream dependencies
-and bundled secret samples. The new gates remain blocking; these profiles have
-not been published by this review.
+and bundled secret samples. Those findings block publication.
 
 Betterleaks scans Git history for secrets before the build. Trivy scans the
 checkout and built images, and produces a vulnerability report and SBOM per
-profile. CI blocks publication on findings that violate scan policy or on
-scanner errors. Both scanners run on the CI worker.
+profile. Each profile has separate build, smoke test and image scan steps.
+PR and validation runs report image findings as warnings. Source secret
+findings, failed smoke tests and scanner errors fail validation. Publication
+requires all profiles to clear the strict image policy.
 
 Tools intentionally float at **build time** through package feeds and upstream
-releases. Weekly builds refresh them; this does not update a running container
+releases. CI refreshes them by default. This does not update a running container
 or the image already stored on your laptop. Pull an approved replacement and
 start a new container. Record a digest for an exact rollback reference: readable
 date/SHA tags alone are not registry-enforced immutability.

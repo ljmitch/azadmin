@@ -11,7 +11,7 @@ for profile in core dotnet functions; do
   [[ "$id" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 2
   [[ "$(docker image inspect "admin-toolbox:${profile}" --format '{{.Id}}')" == "$id" ]] || exit 1
   jq -e --arg image "$id" \
-    '.image == $image and .blocking_vulnerabilities == 0 and .secret_findings == 0 and .eol_os == false' \
+    '.image == $image and .policy == "block" and .policy_result == "clean" and .blocking_vulnerabilities == 0 and .secret_findings == 0 and .eol_os == false' \
     "reports/${profile}/scan-summary.json" > /dev/null
 done
 for profile in core dotnet functions; do

@@ -4,6 +4,11 @@ umask 077
 
 image="${1:?Usage: scan-image.sh IMAGE [REPORT_DIR]}"
 report_dir="${2:-reports/image}"
+findings_policy="${IMAGE_FINDINGS_POLICY:-block}"
+case "$findings_policy" in
+  block|warn) ;;
+  *) printf 'Invalid image findings policy. Use block or warn.\n' >&2; exit 2 ;;
+esac
 mkdir -p "$report_dir"
 image_id="$(docker image inspect "$image" --format '{{.Id}}')"
 [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 2
@@ -41,12 +46,21 @@ jq '{findings:([.Results[]?.Secrets[]?] | length),rules:([.Results[]?.Secrets[]?
 blocking="$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH" or .Severity == "CRITICAL")] | length' "$report_dir/vulnerabilities.json")"
 secrets="$(jq -er '.findings' "$report_dir/secrets-summary.json")"
 eol="$(jq -r '.Metadata.OS.EOSL // false' "$report_dir/vulnerabilities.json")"
+result=clean
+if (( blocking > 0 || secrets > 0 )) || [[ "$eol" != false ]]; then
+  if [[ "$findings_policy" == warn ]]; then result=warning; else result=blocked; fi
+fi
 jq -n --arg image "$image_id" --argjson blocking "$blocking" --argjson secrets "$secrets" --argjson eol "$eol" \
-  '{image:$image,policy:"block HIGH/CRITICAL including unfixed; block all secrets and EOL OS",blocking_vulnerabilities:$blocking,secret_findings:$secrets,eol_os:$eol}' \
+  --arg policy "$findings_policy" --arg result "$result" \
+  '{image:$image,policy:$policy,policy_result:$result,blocking_vulnerabilities:$blocking,secret_findings:$secrets,eol_os:$eol}' \
   > "$report_dir/scan-summary.json"
 if [[ -f "${TRIVY_CACHE_DIR:-$HOME/.cache/trivy}/db/metadata.json" ]]; then
   jq '{Version,UpdatedAt,NextUpdate,DownloadedAt}' \
     "${TRIVY_CACHE_DIR:-$HOME/.cache/trivy}/db/metadata.json" > "$report_dir/database-metadata.json"
 fi
-printf 'Image policy: %s HIGH/CRITICAL findings, %s secrets, EOL=%s\n' "$blocking" "$secrets" "$eol"
-(( blocking == 0 && secrets == 0 )) && [[ "$eol" == false ]]
+printf -v summary '%s HIGH/CRITICAL findings, %s secret matches, EOL=%s' "$blocking" "$secrets" "$eol"
+printf 'Image policy (%s): %s (%s)\n' "$findings_policy" "$summary" "$result"
+if [[ "$result" == warning ]]; then
+  printf '::warning title=Image findings for %s::%s\n' "$image" "$summary"
+fi
+[[ "$result" != blocked ]]

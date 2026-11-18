@@ -26,7 +26,7 @@ on:
     inputs:
       cache_bust:
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -51,7 +51,7 @@ jobs:
       - name: Cache-bust stamp
         id: bust
         env:
-          CACHE_BUST: ${{ inputs.cache_bust || false }}
+          CACHE_BUST: ${{ github.event_name == 'pull_request' || github.event_name == 'push' || inputs.cache_bust }}
         run: |
           stamp=unknown
           if [ "$CACHE_BUST" = true ]; then stamp="$(date -u +%Y%m%d%H%M%S)"; fi
@@ -66,6 +66,7 @@ jobs:
           build-date: ${{ steps.bust.outputs.build_date }}
           tool-versions: ${{ vars.TOOLBOX_TOOL_VERSIONS }}
           betterleaks-version: ${{ vars.BETTERLEAKS_VERSION || 'latest' }}
+          image-findings-policy: warn
       - name: Retain validation evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

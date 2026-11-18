@@ -57,11 +57,10 @@ jobs:
       - name: Cache-bust stamp
         id: bust
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          CACHE_BUST: ${{ inputs.cache_bust || false }}
+          CACHE_BUST: ${{ github.event_name != 'workflow_dispatch' || inputs.cache_bust }}
         run: |
           stamp=unknown
-          if [ "$EVENT_NAME" = schedule ] || [ "$CACHE_BUST" = true ]; then
+          if [ "$CACHE_BUST" = true ]; then
             stamp="$(date -u +%Y%m%d%H%M%S)"
           fi
           printf 'build_date=%s\n' "$stamp" >> "$GITHUB_OUTPUT"
@@ -75,6 +74,7 @@ jobs:
           build-date: ${{ steps.bust.outputs.build_date }}
           tool-versions: ${{ vars.TOOLBOX_TOOL_VERSIONS }}
           betterleaks-version: ${{ vars.BETTERLEAKS_VERSION || 'latest' }}
+          image-findings-policy: block
           export-cache: "true"
       - name: Log in to GHCR after all gates pass
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4

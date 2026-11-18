@@ -96,11 +96,19 @@ The workflow builds, verifies and scans a locally loaded artifact before pushing
 that same image. It does not rebuild a different image for publication. Each
 profile gets its own evidence and must satisfy the gate.
 
-Trivy inspects the built image for OS/language vulnerabilities and secrets,
-retains a complete vulnerability JSON report and SBOM, and blocks HIGH/CRITICAL
-vulnerabilities as well as secret findings. Unfixed vulnerabilities are included.
-Authentication, database-download and scanner execution errors fail the check;
-they are not treated as clean results. The Trivy binary is pinned with its
+Trivy inspects the built image for OS/language vulnerabilities and secrets and
+retains a vulnerability report and SBOM. Each profile has separate build,
+smoke test and image scan steps. The run summary shows the smoke test and
+scan outcomes alongside the findings.
+
+- PRs, branch pushes and validation-only runs warn on image findings and
+  still upload the full evidence, including unfixed vulnerabilities.
+- GHCR publication blocks on HIGH/CRITICAL findings (including unfixed ones),
+  image secret findings and end-of-life OS results in any profile.
+- Build failures, failed smoke tests, source secret findings, scanner errors
+  and invalid scan reports fail CI in both modes.
+
+The Trivy binary is pinned with its
 checksum in [install-trivy.sh](../.github/scripts/install-trivy.sh). The
 vulnerability database refreshes separately.
 
@@ -168,6 +176,9 @@ volumes and project data have independent lifecycles and remain your responsibil
 For everyday work, use `make build-fresh` or the PowerShell refresh command in
 section 2. This pulls fresh parents and asks each installer for the current
 release in its configured channel. Cached builds can reuse the previous version.
+CI pulls the base and SDK images and refreshes floating tool layers by default
+on PRs, branch pushes, `main` pushes and scheduled runs. Manual runs can disable
+the tool refresh with `cache_bust: false`. Explicit version overrides still apply.
 
 Use build arguments when a project needs specific versions. For example,
 these arguments select versions available during the November review.

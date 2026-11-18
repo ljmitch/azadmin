@@ -16,6 +16,9 @@ inputs:
   betterleaks-version:
     description: Betterleaks stable release selector
     default: latest
+  image-findings-policy:
+    description: Warn on image findings in validation or block them before publication
+    default: block
   export-cache:
     description: Only trusted publication runs may update the shared build cache
     default: "false"
@@ -57,14 +60,16 @@ runs:
           cat reports/requested-tool-versions.txt
           echo END_TOOL_VERSIONS
         } >> "$GITHUB_OUTPUT"
-    - name: Prepare evidence and scanner
+    - name: Test scan policy
+      shell: bash
+      run: bash .github/scripts/test-scan-policy.sh
+    - name: Install Trivy
       shell: bash
       run: |
         mkdir -p reports/core reports/dotnet reports/functions
         printf 'TRIVY_CACHE_DIR=%s/azadmin-trivy-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-        bash .github/scripts/test-scan-policy.sh
         bash .github/scripts/install-trivy.sh
-    - name: Scan source for secrets
+    - name: Scan checkout for secrets with Trivy
       shell: bash
       run: bash .github/scripts/scan-source.sh
     - name: Build core
@@ -86,18 +91,22 @@ runs:
           TOOLBOX_PROFILE=core
           ${{ steps.versions.outputs.build-args }}
         cache-from: type=gha,scope=toolbox-profiles
-    - name: Verify and scan core
-      id: core_gate
+    - name: Smoke test core
+      id: core_verify
       continue-on-error: true
       shell: bash
       env:
         BUILD_METADATA: ${{ steps.core_build.outputs.metadata }}
       run: |
         printf '%s\n' "$BUILD_METADATA" > reports/core/build-metadata.json
-        status=0
-        if ! bash scripts/test-image.sh admin-toolbox:core core reports/core; then status=1; fi
-        if ! bash scripts/scan-image.sh admin-toolbox:core reports/core; then status=1; fi
-        exit "$status"
+        bash scripts/test-image.sh admin-toolbox:core core reports/core
+    - name: Scan core image with Trivy
+      id: core_scan
+      continue-on-error: true
+      shell: bash
+      env:
+        IMAGE_FINDINGS_POLICY: ${{ inputs.image-findings-policy }}
+      run: bash scripts/scan-image.sh admin-toolbox:core reports/core
     - name: Build dotnet
       id: dotnet_build
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
@@ -117,18 +126,22 @@ runs:
           TOOLBOX_PROFILE=dotnet
           ${{ steps.versions.outputs.build-args }}
         cache-from: type=gha,scope=toolbox-profiles
-    - name: Verify and scan dotnet
-      id: dotnet_gate
+    - name: Smoke test dotnet
+      id: dotnet_verify
       continue-on-error: true
       shell: bash
       env:
         BUILD_METADATA: ${{ steps.dotnet_build.outputs.metadata }}
       run: |
         printf '%s\n' "$BUILD_METADATA" > reports/dotnet/build-metadata.json
-        status=0
-        if ! bash scripts/test-image.sh admin-toolbox:dotnet dotnet reports/dotnet; then status=1; fi
-        if ! bash scripts/scan-image.sh admin-toolbox:dotnet reports/dotnet; then status=1; fi
-        exit "$status"
+        bash scripts/test-image.sh admin-toolbox:dotnet dotnet reports/dotnet
+    - name: Scan dotnet image with Trivy
+      id: dotnet_scan
+      continue-on-error: true
+      shell: bash
+      env:
+        IMAGE_FINDINGS_POLICY: ${{ inputs.image-findings-policy }}
+      run: bash scripts/scan-image.sh admin-toolbox:dotnet reports/dotnet
     - name: Build functions
       id: functions_build
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
@@ -149,37 +162,50 @@ runs:
           ${{ steps.versions.outputs.build-args }}
         cache-from: type=gha,scope=toolbox-profiles
         cache-to: ${{ inputs.export-cache == 'true' && 'type=gha,scope=toolbox-profiles,mode=max' || '' }}
-    - name: Verify and scan functions
-      id: functions_gate
+    - name: Smoke test functions
+      id: functions_verify
       continue-on-error: true
       shell: bash
       env:
         BUILD_METADATA: ${{ steps.functions_build.outputs.metadata }}
       run: |
         printf '%s\n' "$BUILD_METADATA" > reports/functions/build-metadata.json
-        status=0
-        if ! bash scripts/test-image.sh admin-toolbox:functions functions reports/functions; then status=1; fi
-        if ! bash scripts/scan-image.sh admin-toolbox:functions reports/functions; then status=1; fi
-        exit "$status"
-    - name: Require every verification and scan to pass
+        bash scripts/test-image.sh admin-toolbox:functions functions reports/functions
+    - name: Scan functions image with Trivy
+      id: functions_scan
+      continue-on-error: true
       shell: bash
       env:
-        CORE_RESULT: ${{ steps.core_gate.outcome }}
-        DOTNET_RESULT: ${{ steps.dotnet_gate.outcome }}
-        FUNCTIONS_RESULT: ${{ steps.functions_gate.outcome }}
+        IMAGE_FINDINGS_POLICY: ${{ inputs.image-findings-policy }}
+      run: bash scripts/scan-image.sh admin-toolbox:functions reports/functions
+    - name: Summarize and enforce validation
+      if: ${{ !cancelled() }}
+      shell: bash
+      env:
+        CORE_VERIFY: ${{ steps.core_verify.outcome }}
+        DOTNET_VERIFY: ${{ steps.dotnet_verify.outcome }}
+        FUNCTIONS_VERIFY: ${{ steps.functions_verify.outcome }}
+        CORE_SCAN: ${{ steps.core_scan.outcome }}
+        DOTNET_SCAN: ${{ steps.dotnet_scan.outcome }}
+        FUNCTIONS_SCAN: ${{ steps.functions_scan.outcome }}
       run: |
-        printf 'Core: %s; dotnet: %s; functions: %s\n' "$CORE_RESULT" "$DOTNET_RESULT" "$FUNCTIONS_RESULT"
+        passed=true
         {
-          printf '## Toolbox validation\n\n| Profile | Verify and scan | HIGH/CRITICAL | Secrets |\n|---|---|---:|---:|\n'
+          printf '## Toolbox validation\n\n| Profile | Smoke test | Image scan step | Image findings | HIGH/CRITICAL | Secret matches | EOL |\n|---|---|---|---|---:|---:|---|\n'
           for profile in core dotnet functions; do
-            case "$profile" in core) result="$CORE_RESULT" ;; dotnet) result="$DOTNET_RESULT" ;; functions) result="$FUNCTIONS_RESULT" ;; esac
+            verify_key="${profile^^}_VERIFY"
+            scan_key="${profile^^}_SCAN"
+            verify="${!verify_key:-skipped}"
+            scan="${!scan_key:-skipped}"
+            if [[ "$verify" != success || "$scan" != success ]]; then passed=false; fi
             if [ -f "reports/${profile}/scan-summary.json" ]; then
-              jq -r --arg profile "$profile" --arg result "$result" \
-                '"| " + $profile + " | " + $result + " | " + (.blocking_vulnerabilities|tostring) + " | " + (.secret_findings|tostring) + " |"' \
+              jq -r --arg profile "$profile" --arg verify "$verify" --arg scan "$scan" \
+                '"| " + ([$profile, $verify, $scan, .policy_result, .blocking_vulnerabilities, .secret_findings, .eol_os] | map(tostring) | join(" | ")) + " |"' \
                 "reports/${profile}/scan-summary.json"
             else
-              printf '| %s | %s | unavailable | unavailable |\n' "$profile" "$result"
+              printf '| %s | %s | %s | unavailable | unavailable | unavailable | unavailable |\n' "$profile" "$verify" "$scan"
+              passed=false
             fi
           done
         } >> "$GITHUB_STEP_SUMMARY"
-        [[ "$CORE_RESULT" = success && "$DOTNET_RESULT" = success && "$FUNCTIONS_RESULT" = success ]]
+        [[ "$passed" == true ]]

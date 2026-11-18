@@ -13,7 +13,8 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$fixture/bin" "$fixture/work"
 export SCAN_TEST_FIXTURE="$fixture"
-export SCAN_TEST_IMAGE_ID="sha256:$(printf '%064d' 1)"
+SCAN_TEST_IMAGE_ID="sha256:$(printf '%064d' 1)"
+export SCAN_TEST_IMAGE_ID
 
 cat > "$fixture/bin/docker" <<'MOCK'
 #!/usr/bin/env bash
@@ -75,7 +76,8 @@ printf '{"SchemaVersion":2,"ArtifactType":"repository","ArtifactName":".","Resul
 
 passed=0
 image_case() {
-  local scenario="$1" expected="$2" actual=0
+  local scenario="$1" expected="$2" policy="${3:-block}" actual=0
+  local report_dir="$fixture/reports-$scenario-$policy" log="$fixture/log-$scenario-$policy"
   export SCAN_TEST_SCENARIO="$scenario"
   cp "$fixture/base-vulnerability.json" "$fixture/vulnerability.json"
   cp "$fixture/base-secret.json" "$fixture/secret.json"
@@ -97,31 +99,43 @@ image_case() {
     wrong-schema) jq '.SchemaVersion=999' "$fixture/base-vulnerability.json" > "$fixture/vulnerability.json" ;;
     invalid-secret) printf '{}\n' > "$fixture/secret.json" ;;
   esac
-  if bash "$repo_root/scripts/scan-image.sh" admin-toolbox:fixture "$fixture/reports-$scenario" > "$fixture/log-$scenario" 2>&1; then
+  if IMAGE_FINDINGS_POLICY="$policy" bash "$repo_root/scripts/scan-image.sh" admin-toolbox:fixture "$report_dir" > "$log" 2>&1; then
     actual=0
   else actual=$?
   fi
-  if [[ "$expected" == pass ]]; then
-    [[ "$actual" == 0 ]] || { printf 'FAIL: %s should pass (exit %s)\n' "$scenario" "$actual"; cat "$fixture/log-$scenario"; exit 1; }
-    jq -e 'has("components") and .bomFormat=="CycloneDX"' "$fixture/reports-$scenario/sbom.cdx.json" > /dev/null
+  if [[ "$expected" == pass || "$expected" == warning ]]; then
+    [[ "$actual" == 0 ]] || { printf 'FAIL: %s should pass (exit %s)\n' "$scenario" "$actual"; cat "$log"; exit 1; }
+    jq -e 'has("components") and .bomFormat=="CycloneDX"' "$report_dir/sbom.cdx.json" > /dev/null
   else
     [[ "$actual" != 0 ]] || { printf 'FAIL: %s passed unexpectedly\n' "$scenario"; exit 1; }
   fi
-  if grep -RqE 'AZADMIN_TEST_(CONFIG|MATCH)_PRIVATE' "$fixture/reports-$scenario" "$fixture/log-$scenario"; then
+  if grep -RqE 'AZADMIN_TEST_(CONFIG|MATCH)_PRIVATE' "$report_dir" "$log"; then
     printf 'FAIL: private image configuration or secret match reached retained output\n'; exit 1
   fi
   if [[ "$scenario" == high-unfixed || "$scenario" == critical ]]; then
-    jq -e '.blocking_vulnerabilities==1' "$fixture/reports-$scenario/scan-summary.json" > /dev/null
+    jq -e '.blocking_vulnerabilities==1' "$report_dir/scan-summary.json" > /dev/null
   elif [[ "$scenario" == secret-match ]]; then
-    jq -e '.findings==1 and .rules[0].rule=="fixture-rule"' "$fixture/reports-$scenario/secrets-summary.json" > /dev/null
+    jq -e '.findings==1 and .rules[0].rule=="fixture-rule"' "$report_dir/secrets-summary.json" > /dev/null
+  fi
+  if [[ "$expected" == warning ]]; then
+    jq -e '.policy == "warn" and .policy_result == "warning"' "$report_dir/scan-summary.json" > /dev/null
+    grep -q '^::warning title=Image findings' "$log"
+  elif grep -q '^::warning title=Image findings' "$log"; then
+    printf 'FAIL: unexpected findings warning for %s (%s)\n' "$scenario" "$policy"
+    exit 1
   fi
   passed=$((passed + 1))
-  printf 'PASS: image %s\n' "$scenario"
+  printf 'PASS: image %s (%s)\n' "$scenario" "$policy"
 }
 
 for scenario in clean secret-array medium; do image_case "$scenario" pass; done
 for scenario in high-unfixed critical secret-match eol no-inventory wrong-image wrong-os invalid-json wrong-schema invalid-secret invalid-sbom vuln-error secret-error convert-error; do
   image_case "$scenario" fail
+done
+image_case clean pass warn
+for scenario in high-unfixed critical secret-match eol; do image_case "$scenario" warning warn; done
+for scenario in wrong-image invalid-json invalid-secret invalid-sbom vuln-error secret-error convert-error; do
+  image_case "$scenario" fail warn
 done
 
 for scenario in source-clean source-array source-secret source-invalid source-wrong-type source-error; do

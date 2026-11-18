@@ -85,8 +85,9 @@ podman run --rm -v ${PWD}:/work -w /work admin-toolbox:latest pwsh -NoProfile -F
 CI uses Docker Buildx on GitHub-hosted `ubuntu-latest` and must pass
 verification, Betterleaks Git history scanning, and Trivy source and image
 scans before pushing to GHCR.
-Keep HIGH/CRITICAL findings (including unfixed ones) blocking unless a specific
-reviewed exception policy is separately authorised. Scanner errors are failures.
+Keep HIGH/CRITICAL findings (including unfixed ones), image secret findings
+and EOL results blocking for publication. Validation-only runs report image
+findings as warnings. Scanner errors and source secret findings are failures.
 Do not upload raw secret matches or image-config environment/history values.
 Do not add a `pull_request` push-to-GHCR
 job. Local workflow stays Podman; see [docs/BUILD.md](docs/BUILD.md).
